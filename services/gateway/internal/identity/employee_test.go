@@ -10,12 +10,12 @@ import (
 func TestParseEmployeeToken_OK(t *testing.T) {
 	secret := []byte("test-secret")
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":           "u-1",
-		"kind":          KindEmployee,
-		"email":         "a@corp.local",
-		"display_name":  "Alice",
-		"roles":         []any{"organizer"},
-		"exp":           time.Now().Add(time.Hour).Unix(),
+		"sub":          "u-1",
+		"kind":         KindEmployee,
+		"email":        "a@corp.local",
+		"display_name": "Alice",
+		"roles":        []any{"organizer"},
+		"exp":          time.Now().Add(time.Hour).Unix(),
 	})
 	s, err := tok.SignedString(secret)
 	if err != nil {

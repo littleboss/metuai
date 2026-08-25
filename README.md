@@ -11,7 +11,7 @@
 
 ## 本地启动
 
-需要 Docker、Go 和 pnpm。以下命令均从仓库根目录开始执行。
+需要 Docker、Go 和 pnpm。Go toolchain: use Go 1.22+ (module currently resolves higher; for offline installs pin matching toolchain). 以下命令均从仓库根目录开始执行。
 
 ### 1. 启动 Postgres 与 LiveKit
 
