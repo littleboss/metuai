@@ -5,8 +5,9 @@ services:
       POSTGRES_USER: metuai
       POSTGRES_PASSWORD: metuai
       POSTGRES_DB: metuai
+    # Host 55432 avoids clashing with common local Postgres on 5432.
     ports:
-      - "5432:5432"
+      - "55432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U metuai"]
       interval: 3s
@@ -16,7 +17,8 @@ services:
   livekit:
     image: livekit/livekit-server:v1.8.4
     command: --dev --bind 0.0.0.0
+    # Host 17880 avoids clashing with other LiveKit/dev servers on 7880.
     ports:
-      - "7880:7880"
-      - "7881:7881"
-      - "7882:7882/udp"
+      - "17880:7880"
+      - "17881:7881"
+      - "17882:7882/udp"
