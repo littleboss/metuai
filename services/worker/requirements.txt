@@ -1,0 +1,4 @@
+# 默认不装 FunASR（体积大、需模型下载）。stub 模式零依赖即可跑。
+# 真 ASR：
+#   pip install funasr
+#   可选拉 MinIO：pip install boto3
