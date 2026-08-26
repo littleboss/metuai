@@ -1,0 +1,40 @@
+[package]
+name = "metuai-desktop"
+version = "0.1.0"
+description = "Metuai employee Tauri shell (local mic backup)"
+authors = ["metuai"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "metuai_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+# 默认开启真麦克风采集。`--no-default-features` 可在缺音频依赖的机器上降级构建：
+# 状态机 / 分块 / checksum / 上传链路照常编译与单测，只有开麦会返回错误。
+# feature 名与依赖名保持一致（都叫 cpal），避免代码里 `cfg(feature = "mic")`
+# 和 Cargo.toml 里的名字对不上 —— 那种不一致编译器只会给个 warning，很难发现。
+default = ["cpal"]
+cpal = ["dep:cpal"]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 分块 checksum：与网关 upload.Store 的 sha256 hex 对齐
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
+# 上传用阻塞式 HTTP（跑在自己的线程里，不跟 Tauri 的异步运行时纠缠）
+ureq = { version = "2", features = ["json"] }
+# 本机麦克风采集（默认输入设备，不是 system loopback）
+cpal = { version = "0.15", optional = true }
+# spool 落盘加密（架构 §5.3：设备落盘保护，AES-256-GCM）
+aes-gcm = "0.10.3"
+
+[dev-dependencies]
+tempfile = "3"
