@@ -1,12 +1,71 @@
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.sw?
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# --- Local / agent scratch ---
 .worktrees/
+.claude/
+tmp/
+*.local.md
+
+# --- Secrets & local env (keep *.example tracked) ---
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+!.env.*.example
+
+# --- Node / Web / pnpm (apps/web, apps/desktop) ---
 node_modules/
 dist/
-*.local.md
-services/gateway/vendor/
+dist-ssr/
+coverage/
+*.tsbuildinfo
+.vite/
+.turbo/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.local
+
+# --- Rust / Tauri (apps/desktop) ---
 apps/desktop/src-tauri/target/
+**/*.rs.bk
+*.app
+*.dmg
+*.AppImage
+*.msi
+*.exe
+
+# --- Go (services/gateway) ---
+services/gateway/vendor/
+*.test
+*.out
+coverage.out
+coverage.html
+bin/
+
+# --- Python (services/worker) ---
 services/worker/.venv/
+.venv/
+venv/
 __pycache__/
-*.pyc
-.DS_Store
-.env
-/tmp/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.Python
