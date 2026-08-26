@@ -1,6 +1,6 @@
 # Vespa application package (PoC schema)
 # Deploy with: vespa deploy infra/vespa  (when cluster available)
-# Gateway: set VESPA_URL=http://127.0.0.1:8080 — Upsert dual-writes; ACL still filtered in-process until YQL is wired.
+# Gateway: set VESPA_URL=http://127.0.0.1:8080 — Upsert dual-writes; Search sends ACL-first YQL (no embedding/ANN yet).
 
 schema doc {
     document doc {
