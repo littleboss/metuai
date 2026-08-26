@@ -14,6 +14,8 @@ export function JoinGuestPage({ meetingId }: JoinGuestPageProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!recordingAccepted) return
+
     setError('')
     setIsJoining(true)
 
@@ -24,6 +26,11 @@ export function JoinGuestPage({ meetingId }: JoinGuestPageProps) {
       const credentials = await livekitToken(meetingId, session.token)
       sessionStorage.setItem('lkToken', credentials.token)
       sessionStorage.setItem('lkUrl', credentials.livekit_url)
+      sessionStorage.setItem('meetingId', meetingId)
+      sessionStorage.setItem('authToken', session.token)
+      sessionStorage.setItem('isOrganizer', '0')
+      // 嘉宾禁止本机录音（架构 §5）。
+      sessionStorage.setItem('principalKind', 'guest')
       window.location.assign('/room')
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '加入会议失败')
@@ -35,7 +42,9 @@ export function JoinGuestPage({ meetingId }: JoinGuestPageProps) {
     <main className="shell guest-shell">
       <header className="brand">
         <a href="/" className="brand-home" aria-label="返回员工首页">
-          <span className="brand-mark" aria-hidden="true">M</span>
+          <span className="brand-mark" aria-hidden="true">
+            M
+          </span>
           <span>METUAI / GUEST ACCESS</span>
         </a>
         <span className="status-pill muted">INVITED</span>
@@ -44,12 +53,16 @@ export function JoinGuestPage({ meetingId }: JoinGuestPageProps) {
       <section className="guest-layout">
         <div className="guest-aside">
           <p className="eyebrow">访客会议入口 · 02</p>
-          <h1>你被邀请<br />加入对话。</h1>
+          <h1>
+            你被邀请
+            <br />
+            加入对话。
+          </h1>
           <p className="meeting-reference">ROOM / {meetingId}</p>
           <div className="privacy-note">
             <span aria-hidden="true">◎</span>
             <p>
-              本场会议包含录音。只有确认知悉后，系统才会签发入会凭证。
+              本场会议将被企业服务器录音、转写，并可能进入知识库。嘉宾端不做本机录音。不确认则无法入会。
             </p>
           </div>
         </div>
@@ -94,10 +107,12 @@ export function JoinGuestPage({ meetingId }: JoinGuestPageProps) {
                 onChange={(event) => setRecordingAccepted(event.target.checked)}
                 required
               />
-              <span className="checkmark" aria-hidden="true">✓</span>
+              <span className="checkmark" aria-hidden="true">
+                ✓
+              </span>
               <span>
-                <strong>我已知悉并同意会议录音</strong>
-                <small>录音用于会议纪要与后续回顾。</small>
+                <strong>我已知悉并同意会议录音与转写</strong>
+                <small>录音用于会议纪要与后续回顾；嘉宾端无本机麦克风备份。</small>
               </span>
             </label>
 
@@ -111,7 +126,11 @@ export function JoinGuestPage({ meetingId }: JoinGuestPageProps) {
             </button>
           </form>
 
-          {error && <p className="error-message" role="alert">{error}</p>}
+          {error && (
+            <p className="error-message" role="alert">
+              {error}
+            </p>
+          )}
         </div>
       </section>
     </main>
