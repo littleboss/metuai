@@ -103,3 +103,17 @@ export async function resumePendingUpload(
     employeeJwt,
   })
 }
+
+/** 客户端重启后自动续传待上传队列（架构 §5.2）。失败不抛，由调用方展示。 */
+export async function resumeAllPendingUploads(employeeJwt: string): Promise<number> {
+  if (!isTauriRuntime() || !employeeJwt) {
+    return 0
+  }
+  const items = await listPendingUploads()
+  let done = 0
+  for (const item of items) {
+    await resumePendingUpload(item.upload_id, employeeJwt)
+    done += 1
+  }
+  return done
+}

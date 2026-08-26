@@ -1,10 +1,13 @@
-import { LiveKitRoom, VideoConference, useParticipants } from '@livekit/components-react'
+import { LiveKitRoom, VideoConference, useLocalParticipant, useParticipants, useRoomContext } from '@livekit/components-react'
 import '@livekit/components-styles'
+import { RoomEvent } from 'livekit-client'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import {
   endMeeting,
   heartbeat,
+  issueInRoomGuestCode,
   kickParticipant,
+  leaveMeeting,
   listChat,
   lockMeeting,
   postChat,
@@ -12,19 +15,27 @@ import {
   unlockMeeting,
   type ChatMessage,
 } from '../lib/api'
-import {
+  import {
   canUseLocalRecording,
   flushRecordingAudit,
   listPendingUploads,
   pauseLocalRecording,
   purgeLocalRecording,
   recordingState,
+  resumeAllPendingUploads,
   resumeLocalRecording,
   resumePendingUpload,
   startLocalRecording,
   stopAndUploadLocalRecording,
   type PendingUpload,
 } from '../lib/localRecording'
+
+const micFloorAttr = 'mic_floor_at'
+
+function identityUserKey(identity: string): string {
+  const sep = identity.indexOf('~')
+  return sep === -1 ? identity : identity.slice(0, sep)
+}
 
 type RoomPageProps = {
   url: string
@@ -51,6 +62,10 @@ function OrganizerToolbar({
   const [password, setPassword] = useState(initialPassword)
   const [status, setStatus] = useState('')
   const [busy, setBusy] = useState(false)
+  const [guestEmail, setGuestEmail] = useState('')
+  const [guestIdentity, setGuestIdentity] = useState('')
+  const [inRoomCode, setInRoomCode] = useState('')
+  const [inRoomLink, setInRoomLink] = useState('')
 
   async function run(action: () => Promise<void>, okMessage: string) {
     setBusy(true)
@@ -122,20 +137,75 @@ function OrganizerToolbar({
         </p>
       )}
 
+      <p className="eyebrow">GUEST CODE</p>
+      <p className="organizer-status">没有邮件时，把验证码或链接出示给场上嘉宾。</p>
+      <div className="organizer-actions">
+        <input
+          type="email"
+          value={guestEmail}
+          onChange={(event) => setGuestEmail(event.target.value)}
+          placeholder="嘉宾邮箱"
+          aria-label="会中嘉宾邮箱"
+        />
+        <select
+          value={guestIdentity}
+          onChange={(event) => setGuestIdentity(event.target.value)}
+          aria-label="场上嘉宾"
+        >
+          <option value="">选择场上嘉宾</option>
+          {participants
+            .filter((p) => !p.isLocal && identityUserKey(p.identity).startsWith('guest:'))
+            .map((p) => (
+              <option key={p.identity} value={identityUserKey(p.identity)}>
+                {p.name || identityUserKey(p.identity)}
+              </option>
+            ))}
+        </select>
+        <button
+          type="button"
+          disabled={busy || !guestEmail.trim()}
+          onClick={() =>
+            run(async () => {
+              const issued = await issueInRoomGuestCode(
+                meetingId,
+                authToken,
+                guestEmail.trim(),
+                guestIdentity,
+              )
+              setInRoomCode(issued.code)
+              setInRoomLink(issued.magic_url)
+            }, '已生成会中验证码')
+          }
+        >
+          出示验证码
+        </button>
+      </div>
+      {inRoomCode && (
+        <p className="organizer-password">
+          验证码 <code>{inRoomCode}</code>
+          <br />
+          链接 <code>{inRoomLink}</code>
+        </p>
+      )}
+
       <p className="eyebrow">KICK</p>
       <ul className="kick-list">
         {participants
           .filter((p) => !p.isLocal)
+          .filter((p, _, list) => {
+            const key = identityUserKey(p.identity)
+            return list.find((item) => !item.isLocal && identityUserKey(item.identity) === key) === p
+          })
           .map((p) => (
-            <li key={p.identity}>
-              <span>{p.name || p.identity}</span>
+            <li key={identityUserKey(p.identity)}>
+              <span>{p.name || identityUserKey(p.identity)}</span>
               <button
                 type="button"
                 disabled={busy}
                 onClick={() =>
                   run(
                     () => kickParticipant(meetingId, authToken, p.identity),
-                    `已踢出 ${p.name || p.identity}`,
+                    `已踢出 ${p.name || identityUserKey(p.identity)}`,
                   )
                 }
               >
@@ -176,16 +246,38 @@ function LocalRecordingPanel({
   }
 
   useEffect(() => {
-    void listPendingUploads().then(setPending, () => setPending([]))
-    void recordingState()
-      .then((current) => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const items = await listPendingUploads()
+        if (cancelled) return
+        setPending(items)
+      } catch {
+        if (!cancelled) setPending([])
+      }
+      try {
+        const current = await recordingState()
+        if (cancelled) return
         setState(current)
         setStatus(current === 'RECORDING' ? '已在入会前自动开始备份' : `当前状态：${current}`)
-      })
-      .catch((error: unknown) => {
-        setStatus(error instanceof Error ? error.message : '无法读取本机录音状态')
-      })
-  }, [])
+        if (current === 'IDLE' && authToken) {
+          const n = await resumeAllPendingUploads(authToken)
+          if (cancelled) return
+          if (n > 0) {
+            setStatus(`已自动恢复 ${n} 条待传本机录音`)
+            await refreshPending()
+          }
+        }
+      } catch (error: unknown) {
+        if (!cancelled) {
+          setStatus(error instanceof Error ? error.message : '无法读取本机录音状态')
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [authToken])
 
   async function run(action: () => Promise<void>) {
     setBusy(true)
@@ -437,6 +529,81 @@ function PersistChat({
   )
 }
 
+/**
+ * 同一员工多端时只发一路麦：后开麦的端成为音频源，前一端静音并暂停本机录音。
+ */
+function MicFloorGuard() {
+  const room = useRoomContext()
+  const { localParticipant, isMicrophoneEnabled } = useLocalParticipant()
+  const participants = useParticipants()
+  const [, setTick] = useState(0)
+  const claimedRef = useRef(false)
+  const yieldingRef = useRef(false)
+
+  useEffect(() => {
+    const bump = () => setTick((n) => n + 1)
+    room.on(RoomEvent.ParticipantAttributesChanged, bump)
+    room.on(RoomEvent.TrackMuted, bump)
+    room.on(RoomEvent.TrackUnmuted, bump)
+    room.on(RoomEvent.TrackPublished, bump)
+    room.on(RoomEvent.TrackUnpublished, bump)
+    return () => {
+      room.off(RoomEvent.ParticipantAttributesChanged, bump)
+      room.off(RoomEvent.TrackMuted, bump)
+      room.off(RoomEvent.TrackUnmuted, bump)
+      room.off(RoomEvent.TrackPublished, bump)
+      room.off(RoomEvent.TrackUnpublished, bump)
+    }
+  }, [room])
+
+  useEffect(() => {
+    if (!isMicrophoneEnabled) {
+      claimedRef.current = false
+      yieldingRef.current = false
+      return
+    }
+    if (claimedRef.current) return
+    claimedRef.current = true
+    const ts = Date.now().toString()
+    void localParticipant.setAttributes({ [micFloorAttr]: ts })
+    if (canUseLocalRecording()) {
+      void resumeLocalRecording().catch(() => {
+        /* 观看端可能从未开始录音 */
+      })
+    }
+  }, [isMicrophoneEnabled, localParticipant])
+
+  const myKey = identityUserKey(localParticipant.identity)
+  const myTs = Number(localParticipant.attributes[micFloorAttr] || 0)
+  let otherWins = false
+  for (const participant of participants) {
+    if (participant.identity === localParticipant.identity) continue
+    if (identityUserKey(participant.identity) !== myKey) continue
+    if (Number(participant.attributes[micFloorAttr] || 0) > myTs) {
+      otherWins = true
+    }
+  }
+
+  useEffect(() => {
+    if (!otherWins || !isMicrophoneEnabled || yieldingRef.current) return
+    yieldingRef.current = true
+    void localParticipant.setMicrophoneEnabled(false)
+    if (canUseLocalRecording()) {
+      void pauseLocalRecording().catch(() => {
+        /* ignore */
+      })
+    }
+  }, [otherWins, isMicrophoneEnabled, localParticipant])
+
+  const floorNote = otherWins
+    ? '另一台设备正在发麦，本端已静音'
+    : isMicrophoneEnabled
+      ? '当前设备是麦克风源，本机录音跟这块麦走'
+      : '同一账号可多端观看；开麦后会抢走其它设备上的麦克风'
+
+  return <p className="mic-floor-hint">{floorNote}</p>
+}
+
 export function RoomPage({
   url,
   token,
@@ -484,6 +651,7 @@ export function RoomPage({
         audio
         video
         onDisconnected={() => {
+          void leaveMeeting(meetingId, authToken).catch(() => undefined)
           void finalizeLocalRecording().finally(() => window.location.assign(`/meeting/${meetingId}`))
         }}
       >
@@ -493,6 +661,7 @@ export function RoomPage({
             <VideoConference />
           </div>
           <div className="room-side">
+            <MicFloorGuard />
             {isOrganizer && (
               <OrganizerToolbar
                 meetingId={meetingId}

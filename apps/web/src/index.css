@@ -86,6 +86,16 @@ a {
   text-decoration: none;
 }
 
+.brand > button {
+  margin-left: 12px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
 .status-pill {
   margin-left: auto;
   padding: 7px 10px;
@@ -416,6 +426,16 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.media-player {
+  margin: 10px 0;
+}
+
+.media-player video,
+.media-player audio {
+  width: 100%;
+  max-width: 520px;
+}
+
 .media-artifact-detail code,
 .audit-compact-list code {
   font-size: 12px;
@@ -496,6 +516,49 @@ textarea:focus {
 .employee-meeting-list button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.employee-meeting-list .after-link {
+  min-width: 58px;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.directory-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.directory-picks button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  background: #151611;
+  cursor: pointer;
+}
+
+.directory-picks button small {
+  color: var(--muted);
+  font-size: 10px;
+  font-family: "SFMono-Regular", Menlo, monospace;
+}
+
+.directory-picks button[aria-pressed='true'] {
+  border-color: var(--acid);
+  color: var(--acid);
 }
 
 .share-link {
@@ -655,6 +718,8 @@ textarea:focus {
 }
 
 .organizer-actions button,
+.organizer-actions input,
+.organizer-actions select,
 .kick-list button,
 .persist-chat form button {
   min-height: 40px;
@@ -663,6 +728,12 @@ textarea:focus {
   color: var(--ink);
   background: #1a1b17;
   cursor: pointer;
+}
+
+.organizer-actions input,
+.organizer-actions select {
+  cursor: text;
+  font: inherit;
 }
 
 .organizer-actions button.danger {
@@ -696,6 +767,15 @@ textarea:focus {
   justify-content: space-between;
   gap: 8px;
   font-size: 13px;
+}
+
+.mic-floor-hint {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .persist-chat {
