@@ -28,6 +28,9 @@ func TestParseEmployeeToken_OK(t *testing.T) {
 	if p.UserID != "u-1" || p.Kind != KindEmployee || p.Email != "a@corp.local" || p.DisplayName != "Alice" {
 		t.Fatalf("got %+v", p)
 	}
+	if !p.HasRole("organizer") || p.HasRole("audit_admin") {
+		t.Fatalf("roles not parsed: %+v", p.Roles)
+	}
 }
 
 func TestParseEmployeeToken_RejectsGuestKind(t *testing.T) {

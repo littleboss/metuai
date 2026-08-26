@@ -28,6 +28,7 @@ func TestGuestSession_RoundTrip(t *testing.T) {
 		GuestID:     "gst_1",
 		MeetingID:   "mtg_1",
 		DisplayName: "Bob",
+		Email:       "bob@example.com",
 	}
 	s, err := IssueGuestSession(in, secret, time.Hour)
 	if err != nil {
@@ -37,7 +38,7 @@ func TestGuestSession_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Kind != KindGuest || out.GuestID != "gst_1" || out.MeetingID != "mtg_1" || out.DisplayName != "Bob" {
+	if out.Kind != KindGuest || out.GuestID != "gst_1" || out.MeetingID != "mtg_1" || out.DisplayName != "Bob" || out.Email != "bob@example.com" {
 		t.Fatalf("got %+v", out)
 	}
 }

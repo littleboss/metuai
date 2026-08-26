@@ -16,6 +16,7 @@ func IssueGuestSession(p Principal, hmacSecret []byte, ttl time.Duration) (strin
 		"guest_id":     p.GuestID,
 		"meeting_id":   p.MeetingID,
 		"display_name": p.DisplayName,
+		"email":        p.Email,
 		"exp":          time.Now().Add(ttl).Unix(),
 	})
 	return tok.SignedString(hmacSecret)
@@ -43,5 +44,6 @@ func ParseGuestSession(tokenString string, hmacSecret []byte) (Principal, error)
 		GuestID:     stringClaim(claims, "guest_id"),
 		MeetingID:   stringClaim(claims, "meeting_id"),
 		DisplayName: stringClaim(claims, "display_name"),
+		Email:       stringClaim(claims, "email"),
 	}, nil
 }

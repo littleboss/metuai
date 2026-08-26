@@ -20,8 +20,24 @@ func TestCreateAndCheckPassword(t *testing.T) {
 	if !s.CheckPassword(m.ID, plain) {
 		t.Fatal("password should match")
 	}
+	if !strings.HasPrefix(m.PasswordHash, "$2") {
+		t.Fatalf("password should use an adaptive salted hash, got %q", m.PasswordHash)
+	}
 	if s.CheckPassword(m.ID, "wrong") {
 		t.Fatal("wrong password should fail")
+	}
+}
+
+func TestLegacyPasswordHashStillMatches(t *testing.T) {
+	s := NewMemoryStore()
+	m, _, err := s.Create("legacy", "u-1", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.PasswordHash = legacyPasswordHash("old-password")
+	s.meetings[m.ID] = m
+	if !s.CheckPassword(m.ID, "old-password") || s.CheckPassword(m.ID, "wrong") {
+		t.Fatal("legacy SHA-256 hash compatibility failed")
 	}
 }
 
@@ -89,5 +105,34 @@ func TestRandomIDUsesPrefix(t *testing.T) {
 	}
 	if len(id) != len("mtg_")+8 {
 		t.Fatalf("RandomID() length = %d, want %d", len(id), len("mtg_")+8)
+	}
+}
+
+func TestMemoryStoreEndAndKickAndChat(t *testing.T) {
+	s := NewMemoryStore()
+	m, _, err := s.Create("lifecycle", "u-1", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Kick(m.ID, "guest:g-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsKicked(m.ID, "guest:g-1") {
+		t.Fatal("expected kicked identity")
+	}
+	msg, err := s.AddChat(ChatMessage{MeetingID: m.ID, SenderKey: "employee:u-1", DisplayName: "Alice", Body: "hi"})
+	if err != nil || msg.ID == "" {
+		t.Fatalf("AddChat = %+v, %v", msg, err)
+	}
+	list, err := s.ListChat(m.ID)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListChat = %+v, %v", list, err)
+	}
+	if err := s.End(m.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := s.Get(m.ID)
+	if !ok || !got.Ended || got.EndedAt == nil {
+		t.Fatalf("ended meeting = %+v", got)
 	}
 }

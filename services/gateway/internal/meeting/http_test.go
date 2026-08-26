@@ -2,24 +2,38 @@ package meeting
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"metuai/services/gateway/internal/egress"
 	"metuai/services/gateway/internal/identity"
+	"metuai/services/gateway/internal/knowledge"
 )
 
 func employeeJWT(t *testing.T, secret []byte) string {
 	t.Helper()
+	return employeeJWTFor(t, secret, "u-1", "Alice")
+}
+
+func employeeJWTFor(t *testing.T, secret []byte, sub, name string) string {
+	return employeeJWTForRoles(t, secret, sub, name)
+}
+
+func employeeJWTForRoles(t *testing.T, secret []byte, sub, name string, roles ...string) string {
+	t.Helper()
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":          "u-1",
+		"sub":          sub,
 		"kind":         identity.KindEmployee,
-		"email":        "a@corp.local",
-		"display_name": "Alice",
+		"email":        sub + "@corp.local",
+		"display_name": name,
+		"roles":        roles,
 		"exp":          time.Now().Add(time.Hour).Unix(),
 	})
 	s, err := tok.SignedString(secret)
@@ -29,15 +43,54 @@ func employeeJWT(t *testing.T, secret []byte) string {
 	return s
 }
 
+func guestToken(t *testing.T, body []byte) string {
+	t.Helper()
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.Token
+}
+
 func testRouter(t *testing.T) (*gin.Engine, *Store, []byte, []byte) {
+	t.Helper()
+	return testRouterWithWeb(t, true)
+}
+
+func testRouterWithWeb(t *testing.T, allowEmployeeWeb bool) (*gin.Engine, *Store, []byte, []byte) {
+	t.Helper()
+	return testRouterWithEgress(t, allowEmployeeWeb, nil)
+}
+
+// testRouterWithEgress 允许注入 Egress 编排替身；orch 为 nil 表示未接线（默认）。
+func testRouterWithEgress(t *testing.T, allowEmployeeWeb bool, orch EgressOrchestrator) (*gin.Engine, *Store, []byte, []byte) {
+	return testRouterWithEgressAndVerification(t, allowEmployeeWeb, orch, nil)
+}
+
+func testRouterWithEgressAndVerification(t *testing.T, allowEmployeeWeb bool, orch EgressOrchestrator, sender GuestVerificationSender) (*gin.Engine, *Store, []byte, []byte) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	secretEmp := []byte("emp")
 	secretGst := []byte("gst")
 	store := NewMemoryStore()
 	r := gin.New()
-	RegisterRoutes(r, store, secretEmp, secretGst, "ws://127.0.0.1:17880", "devkey", "secret", true)
+	var rt *EgressRuntime
+	if orch != nil {
+		rt = NewEgressRuntime(orch, "metuai-media")
+	}
+	RegisterRoutes(r, store, secretEmp, secretGst, "ws://127.0.0.1:17880", "devkey", "secret", allowEmployeeWeb, "metuai-media", rt, knowledge.NewMemoryIndex(), NewBreakGlassStore(), NewGuestEmailVerifier(store, sender))
 	return r, store, secretEmp, secretGst
+}
+
+type capturedVerificationSender struct {
+	mail GuestVerificationMail
+}
+
+func (s *capturedVerificationSender) Send(_ context.Context, mail GuestVerificationMail) error {
+	s.mail = mail
+	return nil
 }
 
 func createMeeting(t *testing.T, r *gin.Engine, empToken string) (id, password string) {
@@ -58,6 +111,26 @@ func createMeeting(t *testing.T, r *gin.Engine, empToken string) (id, password s
 		t.Fatal(err)
 	}
 	return created.ID, created.Password
+}
+
+func doJSON(t *testing.T, r *gin.Engine, method, path, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *bytes.Buffer
+	if body == "" {
+		reader = bytes.NewBuffer(nil)
+	} else {
+		reader = bytes.NewBufferString(body)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
 }
 
 func TestCreateMeetingAndGuestCannotGetLivekitBeforeAck(t *testing.T) {
@@ -107,6 +180,135 @@ func TestWrongPasswordRejected(t *testing.T) {
 	}
 }
 
+func TestInvitedEmployeeJoinsWithoutPasswordAndMeetingListIsScoped(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	organizer := employeeJWTFor(t, secretEmp, "u-1", "Alice")
+	invited := employeeJWTFor(t, secretEmp, "u-2", "Bob")
+	uninvited := employeeJWTFor(t, secretEmp, "u-3", "Carol")
+
+	created := doJSON(t, r, http.MethodPost, "/v1/meetings", organizer,
+		`{"title":"planning","employee_ids":["u-2"]}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	var meeting struct {
+		ID       string `json:"id"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &meeting); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/recording-ack", invited, ""); got.Code != http.StatusOK {
+		t.Fatalf("invited ack %d %s", got.Code, got.Body.String())
+	}
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/recording-ack", uninvited, ""); got.Code != http.StatusForbidden {
+		t.Fatalf("uninvited ack without password %d %s", got.Code, got.Body.String())
+	}
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/recording-ack", uninvited,
+		`{"password":"`+meeting.Password+`"}`); got.Code != http.StatusOK {
+		t.Fatalf("uninvited ack with password %d %s", got.Code, got.Body.String())
+	}
+
+	listed := doJSON(t, r, http.MethodGet, "/v1/meetings", invited, "")
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), meeting.ID) {
+		t.Fatalf("invited list %d %s", listed.Code, listed.Body.String())
+	}
+	outsider := employeeJWTFor(t, secretEmp, "u-4", "Dana")
+	listed = doJSON(t, r, http.MethodGet, "/v1/meetings", outsider, "")
+	if listed.Code != http.StatusOK || strings.Contains(listed.Body.String(), meeting.ID) {
+		t.Fatalf("outsider list %d %s", listed.Code, listed.Body.String())
+	}
+}
+
+func TestCoOrganizerCanControlMeetingButParticipantCannot(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	organizer := employeeJWTFor(t, secretEmp, "u-1", "Alice")
+	coOrganizer := employeeJWTFor(t, secretEmp, "u-2", "Bob")
+	participant := employeeJWTFor(t, secretEmp, "u-3", "Carol")
+
+	created := doJSON(t, r, http.MethodPost, "/v1/meetings", organizer,
+		`{"title":"review","employee_ids":["u-2"],"co_organizer_ids":["u-2"]}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	var meeting struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &meeting); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/lock", participant, ""); got.Code != http.StatusForbidden {
+		t.Fatalf("participant lock %d %s", got.Code, got.Body.String())
+	}
+	for _, endpoint := range []string{"lock", "unlock", "reset-password"} {
+		if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/"+endpoint, coOrganizer, ""); got.Code != http.StatusOK {
+			t.Fatalf("co-organizer %s %d %s", endpoint, got.Code, got.Body.String())
+		}
+	}
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/kick", coOrganizer,
+		`{"identity":"guest:g-1"}`); got.Code != http.StatusOK {
+		t.Fatalf("co-organizer kick %d %s", got.Code, got.Body.String())
+	}
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/end", coOrganizer, ""); got.Code != http.StatusOK {
+		t.Fatalf("co-organizer end %d %s", got.Code, got.Body.String())
+	}
+}
+
+func TestGuestEmailVerificationGrantsOnlyVerifiedPostMeetingAccess(t *testing.T) {
+	sender := &capturedVerificationSender{}
+	r, _, secretEmp, _ := testRouterWithEgressAndVerification(t, true, nil, sender)
+	organizer := employeeJWT(t, secretEmp)
+	id, password := createMeeting(t, r, organizer)
+
+	guestSession := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+password+`","display_name":"Bob"}`)
+	if guestSession.Code != http.StatusOK {
+		t.Fatalf("guest session %d %s", guestSession.Code, guestSession.Body.String())
+	}
+	guest := guestToken(t, guestSession.Body.Bytes())
+	if ack := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/recording-ack", guest, ""); ack.Code != http.StatusOK {
+		t.Fatalf("guest ack %d %s", ack.Code, ack.Body.String())
+	}
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-email-verification", guest,
+		`{"email":"Bob@Example.com"}`); got.Code != http.StatusOK {
+		t.Fatalf("request verification %d %s", got.Code, got.Body.String())
+	}
+	if sender.mail.To != "bob@example.com" || len(sender.mail.Code) != 6 {
+		t.Fatalf("mail = %+v", sender.mail)
+	}
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-email-verification/confirm", guest,
+		`{"email":"bob@example.com","code":"000000"}`); got.Code != http.StatusForbidden {
+		t.Fatalf("invalid code %d %s", got.Code, got.Body.String())
+	}
+
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", organizer, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d %s", end.Code, end.Body.String())
+	}
+	if run := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/pipeline/run-fake", organizer, ""); run.Code != http.StatusOK {
+		t.Fatalf("run fake %d %s", run.Code, run.Body.String())
+	}
+	if got := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", guest, ""); got.Code != http.StatusForbidden {
+		t.Fatalf("unverified summary %d %s", got.Code, got.Body.String())
+	}
+
+	verified := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-email-verification/confirm", guest,
+		`{"email":"bob@example.com","code":"`+sender.mail.Code+`"}`)
+	if verified.Code != http.StatusOK {
+		t.Fatalf("confirm verification %d %s", verified.Code, verified.Body.String())
+	}
+	var payload struct {
+		Token string `json:"access_token"`
+	}
+	if err := json.Unmarshal(verified.Body.Bytes(), &payload); err != nil || payload.Token == "" {
+		t.Fatalf("verified token = %q, err=%v body=%s", payload.Token, err, verified.Body.String())
+	}
+	if got := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", payload.Token, ""); got.Code != http.StatusOK {
+		t.Fatalf("verified summary %d %s", got.Code, got.Body.String())
+	}
+}
+
 func TestAckThenLivekitTokenOK(t *testing.T) {
 	r, _, secretEmp, _ := testRouter(t)
 	emp := employeeJWT(t, secretEmp)
@@ -138,7 +340,6 @@ func TestAckThenLivekitTokenOK(t *testing.T) {
 		t.Fatalf("empty token response %+v", tok)
 	}
 
-	// guest path after ack
 	gbody := bytes.NewBufferString(`{"password":"` + password + `","display_name":"Bob"}`)
 	greq := httptest.NewRequest(http.MethodPost, "/v1/meetings/"+id+"/guest-session", gbody)
 	gw := httptest.NewRecorder()
@@ -166,5 +367,335 @@ func TestUnauthorizedCreate(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 got %d", w.Code)
+	}
+}
+
+func TestLockBlocksGuestAndUnlockRestores(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	emp := employeeJWT(t, secretEmp)
+	id, password := createMeeting(t, r, emp)
+
+	lock := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/lock", emp, "")
+	if lock.Code != http.StatusOK {
+		t.Fatalf("lock %d %s", lock.Code, lock.Body.String())
+	}
+
+	gw := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+password+`","display_name":"Bob"}`)
+	if gw.Code != http.StatusForbidden {
+		t.Fatalf("expected locked guest reject, got %d %s", gw.Code, gw.Body.String())
+	}
+
+	unlock := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/unlock", emp, "")
+	if unlock.Code != http.StatusOK {
+		t.Fatalf("unlock %d %s", unlock.Code, unlock.Body.String())
+	}
+	gw2 := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+password+`","display_name":"Bob"}`)
+	if gw2.Code != http.StatusOK {
+		t.Fatalf("guest after unlock %d %s", gw2.Code, gw2.Body.String())
+	}
+}
+
+func TestLockBlocksOrganizerFromIssuingNewJoinToken(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	emp := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, emp)
+	if ack := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/recording-ack", emp, ""); ack.Code != http.StatusOK {
+		t.Fatalf("ack %d %s", ack.Code, ack.Body.String())
+	}
+	if lock := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/lock", emp, ""); lock.Code != http.StatusOK {
+		t.Fatalf("lock %d %s", lock.Code, lock.Body.String())
+	}
+	join := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/livekit-token", emp, "")
+	if join.Code != http.StatusForbidden || !strings.Contains(join.Body.String(), "meeting_locked") {
+		t.Fatalf("locked organizer must not get a new join token: %d %s", join.Code, join.Body.String())
+	}
+}
+
+func TestUninvitedEmployeeMustSupplyMeetingPassword(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	organizer := employeeJWT(t, secretEmp)
+	id, password := createMeeting(t, r, organizer)
+	other := employeeJWTFor(t, secretEmp, "u-2", "Carol")
+
+	missing := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/recording-ack", other, "")
+	if missing.Code != http.StatusForbidden || !strings.Contains(missing.Body.String(), "meeting_password_required") {
+		t.Fatalf("missing password should fail: %d %s", missing.Code, missing.Body.String())
+	}
+	wrong := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/recording-ack", other, `{"password":"wrong"}`)
+	if wrong.Code != http.StatusForbidden {
+		t.Fatalf("wrong password should fail: %d %s", wrong.Code, wrong.Body.String())
+	}
+	ok := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/recording-ack", other, `{"password":"`+password+`"}`)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("correct password should authorize participant: %d %s", ok.Code, ok.Body.String())
+	}
+}
+
+func TestNonOrganizerCannotLock(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	emp := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, emp)
+	other := employeeJWTFor(t, secretEmp, "u-2", "Carol")
+	w := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/lock", other, "")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected organizer_required, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestResetPasswordInvalidatesOld(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	emp := employeeJWT(t, secretEmp)
+	id, oldPassword := createMeeting(t, r, emp)
+
+	w := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/reset-password", emp, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset %d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body.Password == "" || body.Password == oldPassword {
+		t.Fatalf("expected new password, got %q", body.Password)
+	}
+
+	old := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+oldPassword+`","display_name":"Bob"}`)
+	if old.Code != http.StatusForbidden {
+		t.Fatalf("old password should fail, got %d", old.Code)
+	}
+	neu := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+body.Password+`","display_name":"Bob"}`)
+	if neu.Code != http.StatusOK {
+		t.Fatalf("new password should work, got %d %s", neu.Code, neu.Body.String())
+	}
+}
+
+func TestEndMeetingBlocksJoin(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	emp := employeeJWT(t, secretEmp)
+	id, password := createMeeting(t, r, emp)
+	end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", emp, "")
+	if end.Code != http.StatusOK {
+		t.Fatalf("end %d %s", end.Code, end.Body.String())
+	}
+	gw := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+password+`","display_name":"Bob"}`)
+	if gw.Code != http.StatusForbidden {
+		t.Fatalf("expected meeting_ended, got %d %s", gw.Code, gw.Body.String())
+	}
+
+	media := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/media", emp, "")
+	if media.Code != http.StatusOK {
+		t.Fatalf("media %d %s", media.Code, media.Body.String())
+	}
+	var payload struct {
+		Artifacts []MediaArtifact `json:"artifacts"`
+	}
+	_ = json.Unmarshal(media.Body.Bytes(), &payload)
+	if len(payload.Artifacts) != 3 {
+		t.Fatalf("expected 3 media plans, got %+v", payload.Artifacts)
+	}
+	// Egress 未接线：三路都应停在 pending，绝不能出现假 ready。
+	for _, a := range payload.Artifacts {
+		if a.Status != "pending" {
+			t.Fatalf("end path without egress must stay pending: %+v", a)
+		}
+	}
+}
+
+func TestEgressStartsOnJoinAndFinalizesOnEnd(t *testing.T) {
+	orch := &fakeOrchestrator{
+		enabled: true,
+		starts: []egress.Started{
+			{Kind: egress.KindRoomAudio, Outcome: egress.OutcomeStarted, EgressID: "eg_audio"},
+			{Kind: egress.KindRoomVideo, Outcome: egress.OutcomeStarted, EgressID: "eg_video"},
+		},
+		finalize: map[string]egress.Handle{
+			"eg_audio": {EgressID: "eg_audio", Status: egress.StatusComplete, Files: []string{"s3://metuai-media/a.ogg"}},
+			"eg_video": {EgressID: "eg_video", Status: egress.StatusFailed, Error: "disk full"},
+		},
+	}
+	r, store, secretEmp, _ := testRouterWithEgress(t, true, orch)
+	emp := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, emp)
+	_ = store.AckRecording(id, PrincipalKey("employee", "u-1", ""))
+
+	// 入会即开录：拿令牌这一步必须触发 Egress。
+	if lt := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/livekit-token", emp, ""); lt.Code != http.StatusOK {
+		t.Fatalf("livekit token %d %s", lt.Code, lt.Body.String())
+	}
+	if orch.startCall != 1 {
+		t.Fatalf("joining should start egress once, got %d", orch.startCall)
+	}
+
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", emp, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d %s", end.Code, end.Body.String())
+	}
+
+	arts := artifactsByKind(t, store, id)
+	if arts[egress.KindRoomAudio].Status != "ready" {
+		t.Fatalf("audio should be ready after a completed egress: %+v", arts[egress.KindRoomAudio])
+	}
+	if arts[egress.KindRoomVideo].Status != "failed" {
+		t.Fatalf("video should be failed: %+v", arts[egress.KindRoomVideo])
+	}
+}
+
+func TestKickBlocksRelivekitToken(t *testing.T) {
+	r, store, secretEmp, _ := testRouter(t)
+	emp := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, emp)
+	_ = store.AckRecording(id, PrincipalKey("employee", "u-1", ""))
+
+	other := employeeJWTFor(t, secretEmp, "u-2", "Carol")
+	_ = store.AckRecording(id, PrincipalKey("employee", "u-2", ""))
+
+	kick := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/kick", emp, `{"identity":"u-2"}`)
+	if kick.Code != http.StatusOK {
+		t.Fatalf("kick %d %s", kick.Code, kick.Body.String())
+	}
+	lt := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/livekit-token", other, "")
+	if lt.Code != http.StatusForbidden {
+		t.Fatalf("kicked user should be blocked, got %d %s", lt.Code, lt.Body.String())
+	}
+}
+
+func TestEmployeeWebForbiddenWhenDisabled(t *testing.T) {
+	r, store, secretEmp, _ := testRouterWithWeb(t, false)
+	emp := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, emp)
+	_ = store.AckRecording(id, PrincipalKey("employee", "u-1", ""))
+
+	lt := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/livekit-token", emp, "")
+	if lt.Code != http.StatusForbidden {
+		t.Fatalf("expected employee_web_forbidden, got %d %s", lt.Code, lt.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/meetings/"+id+"/livekit-token", nil)
+	req.Header.Set("Authorization", "Bearer "+emp)
+	req.Header.Set("X-Metuai-Client", "tauri")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tauri client should be allowed, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestChatPersists(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	emp := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, emp)
+
+	post := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/chat", emp, `{"body":"hello team"}`)
+	if post.Code != http.StatusOK {
+		t.Fatalf("chat post %d %s", post.Code, post.Body.String())
+	}
+	list := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/chat", emp, "")
+	if list.Code != http.StatusOK {
+		t.Fatalf("chat list %d %s", list.Code, list.Body.String())
+	}
+	var payload struct {
+		Messages []ChatMessage `json:"messages"`
+	}
+	_ = json.Unmarshal(list.Body.Bytes(), &payload)
+	if len(payload.Messages) != 1 || payload.Messages[0].Body != "hello team" {
+		t.Fatalf("unexpected messages %+v", payload.Messages)
+	}
+}
+
+func TestLocalRecordingAuditRoundTrip(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	emp := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, emp)
+
+	bad := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/local-recording/audit", emp,
+		`{"events":[{"action":"meeting_ended","detail":"nope"}]}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("non local_recording action must be rejected, got %d %s", bad.Code, bad.Body.String())
+	}
+
+	ok := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/local-recording/audit", emp,
+		`{"events":[
+			{"action":"local_recording_started","detail":"upload_id=up_1"},
+			{"action":"local_recording_acked","detail":"parts=2"}
+		]}`)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("audit post %d %s", ok.Code, ok.Body.String())
+	}
+
+	auditor := employeeJWTForRoles(t, secretEmp, "u-auditor", "Auditor", "audit_admin")
+	list := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/audit", auditor, "")
+	if list.Code != http.StatusOK {
+		t.Fatalf("audit list %d %s", list.Code, list.Body.String())
+	}
+	var payload struct {
+		Events []AuditEvent `json:"events"`
+	}
+	_ = json.Unmarshal(list.Body.Bytes(), &payload)
+	found := 0
+	for _, e := range payload.Events {
+		if strings.HasPrefix(e.Action, "local_recording_") {
+			found++
+		}
+	}
+	if found < 2 {
+		t.Fatalf("want at least 2 local_recording audits, got %+v", payload.Events)
+	}
+}
+
+func TestStrangerCannotReadMeetingData(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	organizer := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, organizer)
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", organizer, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d %s", end.Code, end.Body.String())
+	}
+	if run := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/pipeline/run-fake", organizer, ""); run.Code != http.StatusOK {
+		t.Fatalf("run %d %s", run.Code, run.Body.String())
+	}
+	stranger := employeeJWTFor(t, secretEmp, "u-stranger", "Stranger")
+	for _, path := range []string{
+		"/v1/meetings/" + id,
+		"/v1/meetings/" + id + "/chat",
+		"/v1/meetings/" + id + "/media",
+		"/v1/meetings/" + id + "/pipeline",
+		"/v1/meetings/" + id + "/transcript",
+		"/v1/meetings/" + id + "/summary",
+	} {
+		got := doJSON(t, r, http.MethodGet, path, stranger, "")
+		if got.Code != http.StatusForbidden {
+			t.Errorf("GET %s should reject stranger, got %d %s", path, got.Code, got.Body.String())
+		}
+	}
+}
+
+func TestGuestSuppliedEmailIsNotTreatedAsVerified(t *testing.T) {
+	r, store, secretEmp, _ := testRouter(t)
+	organizer := employeeJWT(t, secretEmp)
+	id, password := createMeeting(t, r, organizer)
+	session := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+password+`","display_name":"Bob","email":"victim@example.com"}`)
+	if session.Code != http.StatusOK {
+		t.Fatalf("guest session %d %s", session.Code, session.Body.String())
+	}
+	guest := guestToken(t, session.Body.Bytes())
+	if ack := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/recording-ack", guest, ""); ack.Code != http.StatusOK {
+		t.Fatalf("guest ack %d %s", ack.Code, ack.Body.String())
+	}
+	if emails, err := store.ListGuestEmails(id); err != nil || len(emails) != 0 {
+		t.Fatalf("unverified input must not enter ACL: emails=%v err=%v", emails, err)
+	}
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", organizer, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d", end.Code)
+	}
+	if run := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/pipeline/run-fake", organizer, ""); run.Code != http.StatusOK {
+		t.Fatalf("run %d", run.Code)
+	}
+	view := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", guest, "")
+	if view.Code != http.StatusForbidden {
+		t.Fatalf("unverified guest must not read post-meeting artifacts: %d %s", view.Code, view.Body.String())
 	}
 }
