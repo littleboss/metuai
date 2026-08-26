@@ -92,6 +92,29 @@ func TestApplyASRResultWritesTranscriptAndStage(t *testing.T) {
 	}
 }
 
+func TestApplyASRResultDetectsLanguageWhenMissing(t *testing.T) {
+	s := NewMemoryStore()
+	m, _, err := s.Create("asr-lang", "u-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.End(m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyASRResult(s, m.ID, "employee:u-1", "stub", []ASRResultInput{{
+		Text: "Hello everyone, thanks for joining the review.", Source: "egress", StartMs: 0, EndMs: 1000,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	segs, err := s.ListTranscript(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 1 || segs[0].Language != "en" {
+		t.Fatalf("want detected en, got %+v", segs)
+	}
+}
+
 func TestRunASRStubUsesLocalFallbackWhenMicReady(t *testing.T) {
 	s := NewMemoryStore()
 	m, _, err := s.Create("asr-stub", "u-1", "")
@@ -117,5 +140,33 @@ func TestRunASRStubUsesLocalFallbackWhenMicReady(t *testing.T) {
 	segs, _ := s.ListTranscript(m.ID)
 	if len(segs) < 1 || segs[0].Source != "local_fallback" {
 		t.Fatalf("want local_fallback segments, got %+v", segs)
+	}
+}
+
+func TestRunASRStubMarksManualReviewWithoutAuthoritativeAudio(t *testing.T) {
+	s := NewMemoryStore()
+	m, _, err := s.Create("asr-stub", "u-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.End(m.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.AddMediaArtifact(MediaArtifact{
+		MeetingID: m.ID,
+		Kind:      KindRoomAudio,
+		Status:    "ready",
+		ObjectKey: "metuai-media/room.ogg",
+	})
+	stage, err := RunASRStub(s, m.ID, "employee:u-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stage != StageManualReview {
+		t.Fatalf("stage=%s", stage)
+	}
+	current, _ := s.Get(m.ID)
+	if current.PipelineStage != StageManualReview {
+		t.Fatalf("pipeline %+v", current)
 	}
 }

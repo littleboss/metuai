@@ -67,6 +67,27 @@ func TestMemoryStoreAckRecording(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreGuestPresenceKeepsDisplayName(t *testing.T) {
+	s := NewMemoryStore()
+	m, _, err := s.Create("guest names", "u-1", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertGuestPresence(m.ID, "gst_1", "Bob"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AckRecording(m.ID, PrincipalKey("guest", "", "gst_1")); err != nil {
+		t.Fatal(err)
+	}
+	guests, err := s.ListGuestParticipants(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(guests) != 1 || guests[0].GuestID != "gst_1" || guests[0].DisplayName != "Bob" {
+		t.Fatalf("guest presence %+v", guests)
+	}
+}
+
 func TestMemoryStoreAckRecordingMissingMeeting(t *testing.T) {
 	s := NewMemoryStore()
 	if err := s.AckRecording("missing", "employee:u-1"); err == nil {
@@ -119,6 +140,31 @@ func TestMemoryStoreEndAndKickAndChat(t *testing.T) {
 	}
 	if !s.IsKicked(m.ID, "guest:g-1") {
 		t.Fatal("expected kicked identity")
+	}
+	if err := s.Kick(m.ID, "u-2~phone"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsKicked(m.ID, "u-2") || !s.IsKicked(m.ID, "u-2~watch") {
+		t.Fatal("device suffix kick should apply to the whole user")
+	}
+	if err := s.AddShare(m.ID, "Reader@Example.com", "u-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.HasShare(m.ID, "reader@example.com") {
+		t.Fatal("expected share")
+	}
+	if err := s.AddGuestEmailSource(m.ID, "reader@example.com", "shared"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveShare(m.ID, "reader@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	emails, err := s.ListGuestEmails(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emails) != 0 {
+		t.Fatalf("shared email should be gone, got %v", emails)
 	}
 	msg, err := s.AddChat(ChatMessage{MeetingID: m.ID, SenderKey: "employee:u-1", DisplayName: "Alice", Body: "hi"})
 	if err != nil || msg.ID == "" {

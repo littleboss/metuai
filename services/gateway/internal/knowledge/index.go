@@ -1,5 +1,5 @@
 // Package knowledge 是会后知识检索副本（架构：PG 权威，此处为带 ACL 的检索索引）。
-// PoC 默认 MemoryIndex；设 VESPA_URL 时可换 HTTP 客户端（见 vespa.go）。
+// PoC 默认 MemoryIndex；设 VESPA_URL 时 Upsert 双写，Search 发 ACL-first YQL（仍无 embedding）。
 package knowledge
 
 import (
@@ -14,7 +14,7 @@ type Document struct {
 	MeetingID          string    `json:"meeting_id"`
 	Title              string    `json:"title"`
 	Text               string    `json:"text"`
-	SourceType         string    `json:"source_type"` // summary | transcript
+	SourceType         string    `json:"source_type"` // summary | transcript | decision | action_item | chat
 	SourceID           string    `json:"source_id"`
 	AllowedUserIDs     []string  `json:"allowed_user_ids"`
 	AllowedGuestEmails []string  `json:"allowed_guest_emails"`
@@ -45,21 +45,55 @@ func NewMemoryIndex() *MemoryIndex {
 	return &MemoryIndex{docs: map[string]Document{}}
 }
 
-func docKey(meetingID, sourceType string) string {
-	return meetingID + ":" + sourceType
+func docKey(meetingID, sourceType, sourceID string) string {
+	if sourceID == "" {
+		sourceID = sourceType
+	}
+	return meetingID + ":" + sourceType + ":" + sourceID
+}
+
+func normalizedDocument(doc Document) Document {
+	emails := make([]string, 0, len(doc.AllowedGuestEmails))
+	seen := map[string]struct{}{}
+	for _, email := range doc.AllowedGuestEmails {
+		email = strings.ToLower(strings.TrimSpace(email))
+		if email == "" {
+			continue
+		}
+		if _, ok := seen[email]; ok {
+			continue
+		}
+		seen[email] = struct{}{}
+		emails = append(emails, email)
+	}
+	doc.AllowedGuestEmails = emails
+	return doc
 }
 
 func (m *MemoryIndex) Upsert(_ context.Context, doc Document) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	doc = normalizedDocument(doc)
 	if doc.Timestamp.IsZero() {
 		doc.Timestamp = time.Now().UTC()
 	}
 	if doc.SourceType == "" {
 		doc.SourceType = "summary"
 	}
-	m.docs[docKey(doc.MeetingID, doc.SourceType)] = doc
+	m.docs[docKey(doc.MeetingID, doc.SourceType, doc.SourceID)] = doc
 	return nil
+}
+
+func (m *MemoryIndex) keysForMeeting(meetingID string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, 0)
+	for k, d := range m.docs {
+		if d.MeetingID == meetingID {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 func (m *MemoryIndex) DeleteMeeting(_ context.Context, meetingID string) error {

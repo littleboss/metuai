@@ -21,6 +21,7 @@ type Started struct {
 	EgressID  string
 	Outcome   string
 	Detail    string
+	Identity  string // LiveKit participant identity；独立音轨才有
 }
 
 // Manager 把「一场会议」翻译成若干路 LiveKit Egress。
@@ -161,6 +162,7 @@ func (m *Manager) startParticipantTracks(ctx context.Context, meetingID string, 
 				ObjectKey: m.qualify(path),
 				Outcome:   OutcomeFailed,
 				Detail:    "egress start failed for " + identity + ": " + err.Error(),
+				Identity:  identity,
 			})
 			continue
 		}
@@ -170,6 +172,7 @@ func (m *Manager) startParticipantTracks(ctx context.Context, meetingID string, 
 			EgressID:  handle.EgressID,
 			Outcome:   OutcomeStarted,
 			Detail:    fmt.Sprintf("livekit egress %s for %s (%s)", handle.EgressID, identity, handle.Status),
+			Identity:  identity,
 		})
 	}
 	return out

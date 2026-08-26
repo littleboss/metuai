@@ -35,16 +35,30 @@ type MeetingMember struct {
 	JoinedAt            *time.Time        `json:"joined_at"`
 }
 
-// GuestEmailChallenge 是嘉宾会后访问的邮箱验证码挑战。CodeHash 永不返回客户端。
+// GuestEmailChallenge 是嘉宾会后访问的邮箱验证码/魔法链接挑战。
+// CodeHash 与 TokenHash 永不返回客户端。
 type GuestEmailChallenge struct {
 	MeetingID  string
 	GuestID    string
 	Email      string
 	CodeHash   string
+	TokenHash  string
 	ExpiresAt  time.Time
 	Attempts   int
 	VerifiedAt *time.Time
 	CreatedAt  time.Time
+}
+
+// GuestIdentityRef 记录某封邮箱曾经用过的临时嘉宾 ID，供跨会合并。
+type GuestIdentityRef struct {
+	MeetingID string
+	GuestID   string
+}
+
+// GuestParticipant 是已确认录音的会中嘉宾，带入会时的显示名快照。
+type GuestParticipant struct {
+	GuestID     string `json:"guest_id"`
+	DisplayName string `json:"display_name"`
 }
 
 // ChatMessage 通过本系统 API 落库的会中聊天（不依赖 LiveKit 短暂数据通道）。
@@ -83,13 +97,41 @@ type TranscriptSegment struct {
 	Confidence         *float64 `json:"confidence"`
 }
 
-// MeetingSummary 对齐架构 §6.3 的结构化纪要（PoC 用假数据填满字段）。
+// CitedItem 是带转写引用的纪要条目（决策、风险、待澄清问题）。
+type CitedItem struct {
+	Text             string   `json:"text"`
+	SourceSegmentIDs []string `json:"source_segment_ids,omitempty"`
+}
+
+// ActionItem 对齐架构 §6.3：负责人只能是内部员工，嘉宾只能写在任务描述里。
+type ActionItem struct {
+	Task             string     `json:"task"`
+	OwnerUserID      string     `json:"owner_user_id,omitempty"`
+	Deadline         *string    `json:"deadline,omitempty"`
+	SourceSegmentIDs []string   `json:"source_segment_ids,omitempty"`
+	SourceMessageIDs []string   `json:"source_message_ids,omitempty"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+}
+
+// MeetingSummary 对齐架构 §6.3 的结构化纪要。
+// OriginalJSON 是 AI 原稿，修订时不得覆盖。
 type MeetingSummary struct {
-	MeetingID     string    `json:"meeting_id"`
-	Summary       string    `json:"summary"`
-	Decisions     []string  `json:"decisions"`
-	ActionItems   []string  `json:"action_items"`
-	Risks         []string  `json:"risks"`
-	OpenQuestions []string  `json:"open_questions"`
-	CreatedAt     time.Time `json:"created_at"`
+	MeetingID     string       `json:"meeting_id"`
+	Summary       string       `json:"summary"`
+	Decisions     []CitedItem  `json:"decisions"`
+	ActionItems   []ActionItem `json:"action_items"`
+	Risks         []CitedItem  `json:"risks"`
+	OpenQuestions []CitedItem  `json:"open_questions"`
+	OriginalJSON  string       `json:"original_json,omitempty"`
+	CreatedAt     time.Time    `json:"created_at"`
+	RevisedAt     *time.Time   `json:"revised_at,omitzero"`
+}
+
+// SummaryRevision 是只追加的纪要修订事件（谁、何时、改了什么）。
+type SummaryRevision struct {
+	ID        string    `json:"id"`
+	MeetingID string    `json:"meeting_id"`
+	ActorKey  string    `json:"actor_key"`
+	PatchJSON string    `json:"patch_json"`
+	CreatedAt time.Time `json:"created_at"`
 }

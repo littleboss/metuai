@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"time"
 )
 
 // S3Config 是网关自己 PutObject 用的凭证（不是 LiveKit Egress 容器里那份）。
@@ -82,6 +83,46 @@ func (s *S3BlobStore) PutFile(ctx context.Context, objectKey, localPath, content
 	})
 	if err != nil {
 		return fmt.Errorf("s3 put %s/%s: %w", s.bucket, objectKey, err)
+	}
+	return nil
+}
+
+func (s *S3BlobStore) SignGetURL(ctx context.Context, objectKey string, ttl time.Duration) (string, error) {
+	if !s.Enabled() {
+		return "", fmt.Errorf("s3 blob store disabled")
+	}
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		return "", fmt.Errorf("object key required")
+	}
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	presign := s3.NewPresignClient(s.client)
+	out, err := presign.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(objectKey),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", fmt.Errorf("s3 presign get %s/%s: %w", s.bucket, objectKey, err)
+	}
+	return out.URL, nil
+}
+
+func (s *S3BlobStore) DeleteObject(ctx context.Context, objectKey string) error {
+	if !s.Enabled() {
+		return fmt.Errorf("s3 blob store disabled")
+	}
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		return nil
+	}
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 delete %s/%s: %w", s.bucket, objectKey, err)
 	}
 	return nil
 }

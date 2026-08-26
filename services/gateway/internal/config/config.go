@@ -36,6 +36,7 @@ type Config struct {
 	SMTPPassword          string
 	SMTPFrom              string
 	SMTPRequireTLS        bool
+	AppBaseURL            string
 }
 
 func FromEnv() Config {
@@ -65,6 +66,7 @@ func FromEnv() Config {
 		SMTPPassword:          os.Getenv("SMTP_PASSWORD"),
 		SMTPFrom:              os.Getenv("SMTP_FROM"),
 		SMTPRequireTLS:        getenv("SMTP_REQUIRE_TLS", "true") == "true",
+		AppBaseURL:            getenv("APP_BASE_URL", "http://127.0.0.1:5173"),
 	}
 }
 

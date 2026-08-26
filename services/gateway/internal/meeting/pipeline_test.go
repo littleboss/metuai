@@ -165,3 +165,36 @@ func TestRunFakePipelineIndexesIntoKnowledge(t *testing.T) {
 	}
 }
 
+func TestRunFakePipelineBindsOrganizerAndCitesSegments(t *testing.T) {
+	s := NewMemoryStore()
+	id := newMeeting(t, s)
+	if err := s.MarkMemberJoined(id, "u-1", "Alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.End(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RunFakePipeline(s, id, nil); err != nil {
+		t.Fatal(err)
+	}
+	segs, err := s.ListTranscript(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) == 0 || segs[0].SpeakerUserID != "u-1" || segs[0].SpeakerDisplayName != "Alice" {
+		t.Fatalf("expected organizer snapshot, got %+v", segs)
+	}
+	sum, ok := s.GetSummary(id)
+	if !ok {
+		t.Fatal("summary missing")
+	}
+	if len(sum.Decisions) == 0 || len(sum.Decisions[0].SourceSegmentIDs) == 0 {
+		t.Fatalf("expected cited decisions, got %+v", sum)
+	}
+	if len(sum.ActionItems) == 0 || sum.ActionItems[0].OwnerUserID != "u-1" {
+		t.Fatalf("expected internal owner, got %+v", sum.ActionItems)
+	}
+	if sum.OriginalJSON == "" {
+		t.Fatal("expected AI original snapshot")
+	}
+}

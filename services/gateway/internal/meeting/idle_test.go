@@ -20,7 +20,7 @@ func TestEndIdleMeetings(t *testing.T) {
 	s.meetings[m.ID] = got
 	s.mu.Unlock()
 
-	endIdleMeetings(s, 10*time.Minute, nil)
+	endIdleMeetings(s, 10*time.Minute, nil, nil)
 
 	after, ok := s.Get(m.ID)
 	if !ok || !after.Ended {
@@ -58,7 +58,7 @@ func TestEndIdleMeetingsFinalizesEgress(t *testing.T) {
 	s.meetings[m.ID] = got
 	s.mu.Unlock()
 
-	endIdleMeetings(s, 10*time.Minute, rt)
+	endIdleMeetings(s, 10*time.Minute, rt, nil)
 
 	if len(orch.stopped) != 1 || orch.stopped[0] != "eg_a" {
 		t.Fatalf("idle end should stop the running egress, got %+v", orch.stopped)
@@ -79,9 +79,65 @@ func TestEndIdleMeetingsSkipsFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endIdleMeetings(s, 10*time.Minute, nil)
+	endIdleMeetings(s, 10*time.Minute, nil, nil)
 	after, ok := s.Get(m.ID)
 	if !ok || after.Ended {
 		t.Fatalf("fresh meeting should stay open, got %+v", after)
+	}
+}
+
+func TestEndIdleMeetingsKeepsOccupiedRoom(t *testing.T) {
+	s := NewMemoryStore()
+	m, _, err := s.Create("still-there", "u-1", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	got := s.meetings[m.ID]
+	got.LastActiveAt = time.Now().UTC().Add(-11 * time.Minute)
+	s.meetings[m.ID] = got
+	s.mu.Unlock()
+
+	endIdleMeetings(s, 10*time.Minute, nil, func(context.Context, string) (bool, error) {
+		return true, nil
+	})
+	after, ok := s.Get(m.ID)
+	if !ok || after.Ended {
+		t.Fatalf("occupied room must not idle-end, got %+v", after)
+	}
+
+	s.mu.Lock()
+	got = s.meetings[m.ID]
+	got.LastActiveAt = time.Now().UTC().Add(-11 * time.Minute)
+	s.meetings[m.ID] = got
+	s.mu.Unlock()
+
+	endIdleMeetings(s, 10*time.Minute, nil, func(context.Context, string) (bool, error) {
+		return false, nil
+	})
+	after, ok = s.Get(m.ID)
+	if !ok || !after.Ended {
+		t.Fatalf("empty room after heartbeat timeout should end, got %+v", after)
+	}
+}
+
+func TestEndIdleMeetingsSkipsWhenOccupancyUnknown(t *testing.T) {
+	s := NewMemoryStore()
+	m, _, err := s.Create("lk-down", "u-1", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	got := s.meetings[m.ID]
+	got.LastActiveAt = time.Now().UTC().Add(-11 * time.Minute)
+	s.meetings[m.ID] = got
+	s.mu.Unlock()
+
+	endIdleMeetings(s, 10*time.Minute, nil, func(context.Context, string) (bool, error) {
+		return false, context.DeadlineExceeded
+	})
+	after, ok := s.Get(m.ID)
+	if !ok || after.Ended {
+		t.Fatalf("unknown occupancy should not end the meeting, got %+v", after)
 	}
 }

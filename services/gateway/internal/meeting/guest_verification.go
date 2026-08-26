@@ -3,7 +3,9 @@ package meeting
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +34,8 @@ var (
 type GuestVerificationMail struct {
 	To           string
 	Code         string
+	MagicToken   string
+	MagicURL     string
 	MeetingID    string
 	MeetingTitle string
 }
@@ -42,52 +46,106 @@ type GuestVerificationSender interface {
 
 // GuestEmailVerifier creates a short-lived, one-time challenge before a guest receives an email-bearing session.
 type GuestEmailVerifier struct {
-	repo   Repository
-	sender GuestVerificationSender
-	ttl    time.Duration
+	repo       Repository
+	sender     GuestVerificationSender
+	ttl        time.Duration
+	AppBaseURL string
 }
 
 func NewGuestEmailVerifier(repo Repository, sender GuestVerificationSender) *GuestEmailVerifier {
 	return &GuestEmailVerifier{repo: repo, sender: sender, ttl: guestEmailVerificationTTL}
 }
 
-func (v *GuestEmailVerifier) Request(ctx context.Context, meeting Meeting, guestID, email string) (time.Time, error) {
-	if v == nil || v.sender == nil {
-		return time.Time{}, ErrGuestEmailVerificationUnavailable
+func (v *GuestEmailVerifier) magicURL(meetingID, token string) string {
+	base := strings.TrimRight(strings.TrimSpace(v.AppBaseURL), "/")
+	if base == "" {
+		base = "http://127.0.0.1:5173"
+	}
+	return base + "/meeting/" + meetingID + "?verify_token=" + token
+}
+
+// IssuedGuestChallenge 是组织者出示的明文验证码/魔法链接。哈希只落库。
+type IssuedGuestChallenge struct {
+	GuestID    string
+	Email      string
+	Code       string
+	MagicToken string
+	MagicURL   string
+	ExpiresAt  time.Time
+}
+
+func normalizeIssuedGuestID(raw string) string {
+	return strings.TrimPrefix(strings.TrimSpace(raw), "guest:")
+}
+
+func (v *GuestEmailVerifier) issue(meeting Meeting, guestID, email string) (IssuedGuestChallenge, error) {
+	if v == nil || v.repo == nil {
+		return IssuedGuestChallenge{}, ErrGuestEmailVerificationUnavailable
 	}
 	email = normalizeGuestEmail(email)
-	if email == "" || strings.TrimSpace(guestID) == "" {
-		return time.Time{}, ErrGuestEmailVerificationInvalid
+	guestID = normalizeIssuedGuestID(guestID)
+	if email == "" || guestID == "" {
+		return IssuedGuestChallenge{}, ErrGuestEmailVerificationInvalid
 	}
 	code, err := guestEmailVerificationCode()
 	if err != nil {
-		return time.Time{}, err
+		return IssuedGuestChallenge{}, err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(code), bcrypt.DefaultCost)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("hash guest email verification code: %w", err)
+		return IssuedGuestChallenge{}, fmt.Errorf("hash guest email verification code: %w", err)
+	}
+	token, err := randomMagicToken()
+	if err != nil {
+		return IssuedGuestChallenge{}, err
 	}
 	now := time.Now().UTC()
 	expiresAt := now.Add(v.ttl)
 	if err := v.repo.SaveGuestEmailChallenge(GuestEmailChallenge{
 		MeetingID: meeting.ID,
-		GuestID:   strings.TrimSpace(guestID),
+		GuestID:   guestID,
 		Email:     email,
 		CodeHash:  string(hash),
+		TokenHash: hashMagicToken(token),
 		ExpiresAt: expiresAt,
 		CreatedAt: now,
 	}); err != nil {
+		return IssuedGuestChallenge{}, err
+	}
+	return IssuedGuestChallenge{
+		GuestID:    guestID,
+		Email:      email,
+		Code:       code,
+		MagicToken: token,
+		MagicURL:   v.magicURL(meeting.ID, token),
+		ExpiresAt:  expiresAt,
+	}, nil
+}
+
+func (v *GuestEmailVerifier) Request(ctx context.Context, meeting Meeting, guestID, email string) (time.Time, error) {
+	if v == nil || v.sender == nil {
+		return time.Time{}, ErrGuestEmailVerificationUnavailable
+	}
+	issued, err := v.issue(meeting, guestID, email)
+	if err != nil {
 		return time.Time{}, err
 	}
 	if err := v.sender.Send(ctx, GuestVerificationMail{
-		To:           email,
-		Code:         code,
+		To:           issued.Email,
+		Code:         issued.Code,
+		MagicToken:   issued.MagicToken,
+		MagicURL:     issued.MagicURL,
 		MeetingID:    meeting.ID,
 		MeetingTitle: meeting.Title,
 	}); err != nil {
 		return time.Time{}, fmt.Errorf("send guest email verification: %w", err)
 	}
-	return expiresAt, nil
+	return issued.ExpiresAt, nil
+}
+
+// IssueInRoom 不依赖 SMTP：组织者当场出示验证码，或把魔法链接复制给嘉宾。
+func (v *GuestEmailVerifier) IssueInRoom(meeting Meeting, guestID, email string) (IssuedGuestChallenge, error) {
+	return v.issue(meeting, guestID, email)
 }
 
 func (v *GuestEmailVerifier) Confirm(meetingID, guestID, email, code string) (GuestEmailChallenge, error) {
@@ -95,6 +153,26 @@ func (v *GuestEmailVerifier) Confirm(meetingID, guestID, email, code string) (Gu
 		return GuestEmailChallenge{}, ErrGuestEmailVerificationUnavailable
 	}
 	return v.repo.VerifyGuestEmailChallenge(meetingID, guestID, email, code)
+}
+
+func (v *GuestEmailVerifier) ConfirmMagic(meetingID, token string) (GuestEmailChallenge, error) {
+	if v == nil || v.repo == nil {
+		return GuestEmailChallenge{}, ErrGuestEmailVerificationUnavailable
+	}
+	return v.repo.VerifyGuestMagicToken(meetingID, token)
+}
+
+func randomMagicToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate guest magic token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func hashMagicToken(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:])
 }
 
 func guestEmailVerificationCode() (string, error) {
@@ -179,7 +257,7 @@ func (s *SMTPVerificationSender) Send(ctx context.Context, message GuestVerifica
 	if err != nil {
 		return err
 	}
-	body := fmt.Sprintf("Your METUAI verification code for meeting %s is: %s\r\n\r\nThis code expires in 15 minutes.\r\n", message.MeetingID, message.Code)
+	body := fmt.Sprintf("Your METUAI verification code for meeting %s is: %s\r\n\r\nOr open this link (expires in 15 minutes):\r\n%s\r\n", message.MeetingID, message.Code, message.MagicURL)
 	if _, err := io.WriteString(writer, "From: "+s.config.From+"\r\nTo: "+message.To+"\r\nSubject: METUAI guest email verification\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n"+body); err != nil {
 		_ = writer.Close()
 		return err

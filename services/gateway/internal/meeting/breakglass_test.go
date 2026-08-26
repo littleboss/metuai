@@ -64,6 +64,20 @@ func TestBreakGlassApplyApproveElevatesSearch(t *testing.T) {
 	if !bg.HasActiveGrant("m1", "u-audit") {
 		t.Fatal("expected active grant")
 	}
+	denied, err := bg.Deny(req.ID, "u-approver")
+	if err == nil {
+		t.Fatalf("deny approved request should fail, got %+v", denied)
+	}
+	revoked, err := bg.Revoke(req.ID, "u-approver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revoked.Status != "expired" {
+		t.Fatalf("revoked status=%s", revoked.Status)
+	}
+	if bg.HasActiveGrant("m1", "u-audit") {
+		t.Fatal("revoked grant must not stay active")
+	}
 }
 
 func TestBreakGlassHTTPFlow(t *testing.T) {
@@ -101,6 +115,30 @@ func TestBreakGlassHTTPFlow(t *testing.T) {
 	dl := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/artifacts/download", applicant, `{"kind":"transcript"}`)
 	if dl.Code != http.StatusOK {
 		t.Fatalf("break-glass download %d %s", dl.Code, dl.Body.String())
+	}
+
+	revoke := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/break-glass/"+req.ID+"/revoke", approver, "")
+	if revoke.Code != http.StatusOK {
+		t.Fatalf("revoke %d %s", revoke.Code, revoke.Body.String())
+	}
+	lost := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/artifacts/download", applicant, `{"kind":"transcript"}`)
+	if lost.Code != http.StatusForbidden {
+		t.Fatalf("revoked grant should lose access, got %d %s", lost.Code, lost.Body.String())
+	}
+
+	again := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/break-glass", applicant, `{"reason":"二次抽查"}`)
+	if again.Code != http.StatusOK {
+		t.Fatalf("second apply %d %s", again.Code, again.Body.String())
+	}
+	var req2 BreakGlassRequest
+	_ = json.Unmarshal(again.Body.Bytes(), &req2)
+	deny := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/break-glass/"+req2.ID+"/deny", approver, "")
+	if deny.Code != http.StatusOK {
+		t.Fatalf("deny %d %s", deny.Code, deny.Body.String())
+	}
+	still := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/artifacts/download", applicant, `{"kind":"transcript"}`)
+	if still.Code != http.StatusForbidden {
+		t.Fatalf("denied grant should not elevate, got %d %s", still.Code, still.Body.String())
 	}
 }
 

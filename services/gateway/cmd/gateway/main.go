@@ -14,6 +14,7 @@ import (
 	"metuai/services/gateway/internal/egress"
 	"metuai/services/gateway/internal/identity"
 	"metuai/services/gateway/internal/knowledge"
+	lktoken "metuai/services/gateway/internal/livekit"
 	"metuai/services/gateway/internal/meeting"
 	"metuai/services/gateway/internal/upload"
 )
@@ -78,9 +79,21 @@ func main() {
 	}
 
 	stop := make(chan struct{})
-	meeting.StartIdleReaper(repo, time.Duration(cfg.IdleEndMinutes)*time.Minute, 30*time.Second, egressRT, stop)
+	occupy := func(ctx context.Context, room string) (bool, error) {
+		n, err := lktoken.ParticipantCount(ctx, cfg.LiveKitURL, cfg.LiveKitAPIKey, cfg.LiveKitAPISecret, room)
+		if err != nil {
+			return false, err
+		}
+		return n > 0, nil
+	}
+	meeting.StartIdleReaper(repo, time.Duration(cfg.IdleEndMinutes)*time.Minute, 30*time.Second, egressRT, occupy, stop)
 
 	knowledgeIdx := knowledge.NewFromEnv()
+	var mediaDeleter meeting.ObjectDeleter
+	if blobs != nil && blobs.Enabled() {
+		mediaDeleter = blobs
+	}
+	meeting.StartRetentionSweeper(repo, knowledgeIdx, mediaDeleter, time.Hour, stop)
 	breakGlass := meeting.BreakGlassForRepo(repo)
 	guestMailSender, err := meeting.NewSMTPVerificationSender(meeting.SMTPConfig{
 		Host:       cfg.SMTPHost,
@@ -94,6 +107,7 @@ func main() {
 		log.Fatal(err)
 	}
 	guestVerifier := meeting.NewGuestEmailVerifier(repo, guestMailSender)
+	guestVerifier.AppBaseURL = cfg.AppBaseURL
 	log.Printf("knowledge backend: %s", knowledge.BackendName(knowledgeIdx))
 	if guestMailSender == nil {
 		log.Printf("guest email verification disabled (configure SMTP_HOST, SMTP_PORT, SMTP_FROM)")
@@ -122,6 +136,10 @@ func main() {
 			"break_glass":        bgBackend,
 		})
 	})
+	var mediaSigner meeting.MediaURLSigner
+	if blobs != nil && blobs.Enabled() {
+		mediaSigner = blobs
+	}
 	meeting.RegisterRoutes(
 		r,
 		repo,
@@ -136,6 +154,7 @@ func main() {
 		knowledgeIdx,
 		breakGlass,
 		guestVerifier,
+		mediaSigner,
 	)
 	// 企业下发桌面端 spool 密钥（PoC：读环境变量；生产应走设备注册 + 轮换）。
 	r.GET("/v1/device/spool-key", identity.EmployeeAuth(cfg.EmployeeJWTSecret), func(c *gin.Context) {

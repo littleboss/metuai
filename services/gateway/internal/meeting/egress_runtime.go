@@ -100,12 +100,13 @@ func (rt *EgressRuntime) EnsureStarted(ctx context.Context, repo Repository, mee
 			continue
 		}
 		_, _ = repo.AddMediaArtifact(MediaArtifact{
-			MeetingID: meetingID,
-			Kind:      r.Kind,
-			Status:    r.Outcome,
-			ObjectKey: r.ObjectKey,
-			Detail:    r.Detail,
-			EgressID:  r.EgressID,
+			MeetingID:      meetingID,
+			Kind:           r.Kind,
+			Status:         r.Outcome,
+			ObjectKey:      r.ObjectKey,
+			Detail:         r.Detail,
+			EgressID:       r.EgressID,
+			ParticipantKey: r.Identity,
 		})
 	}
 	action := "egress_started"
@@ -161,12 +162,13 @@ func (rt *EgressRuntime) EnsureLateTracks(ctx context.Context, repo Repository, 
 			failed++
 		}
 		_, _ = repo.AddMediaArtifact(MediaArtifact{
-			MeetingID: meetingID,
-			Kind:      r.Kind,
-			Status:    r.Outcome,
-			ObjectKey: r.ObjectKey,
-			Detail:    r.Detail,
-			EgressID:  r.EgressID,
+			MeetingID:      meetingID,
+			Kind:           r.Kind,
+			Status:         r.Outcome,
+			ObjectKey:      r.ObjectKey,
+			Detail:         r.Detail,
+			EgressID:       r.EgressID,
+			ParticipantKey: r.Identity,
 		})
 	}
 	if started == 0 && failed == 0 {

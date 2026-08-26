@@ -11,9 +11,16 @@ import (
 // 就会把整个巡检循环挂住，后面的会议再也不会被结束。
 const idleFinalizeTimeout = 60 * time.Second
 
+const occupancyCheckTimeout = 8 * time.Second
+
+// OccupancyCheck 询问房间里是否还有真人在线。
+// 返回 error 时巡检应跳过这场会（不能证明无人，宁可多留一会儿）。
+type OccupancyCheck func(ctx context.Context, roomID string) (occupied bool, err error)
+
 // StartIdleReaper 定期结束长时间无活动的会议，避免最后一人短暂断线误杀。
 // idleFor 默认应对齐架构文档的 10 分钟。
-func StartIdleReaper(repo Repository, idleFor, every time.Duration, egressRT *EgressRuntime, stop <-chan struct{}) {
+// occupy 可为 nil：仅看客户端心跳；有 LiveKit 时应传入真实在房人数。
+func StartIdleReaper(repo Repository, idleFor, every time.Duration, egressRT *EgressRuntime, occupy OccupancyCheck, stop <-chan struct{}) {
 	if idleFor <= 0 {
 		idleFor = 10 * time.Minute
 	}
@@ -28,13 +35,13 @@ func StartIdleReaper(repo Repository, idleFor, every time.Duration, egressRT *Eg
 			case <-stop:
 				return
 			case <-ticker.C:
-				endIdleMeetings(repo, idleFor, egressRT)
+				endIdleMeetings(repo, idleFor, egressRT, occupy)
 			}
 		}
 	}()
 }
 
-func endIdleMeetings(repo Repository, idleFor time.Duration, egressRT *EgressRuntime) {
+func endIdleMeetings(repo Repository, idleFor time.Duration, egressRT *EgressRuntime, occupy OccupancyCheck) {
 	active, err := repo.ListActive()
 	if err != nil {
 		log.Printf("idle reaper list: %v", err)
@@ -44,6 +51,19 @@ func endIdleMeetings(repo Repository, idleFor time.Duration, egressRT *EgressRun
 	for _, m := range active {
 		if m.LastActiveAt.After(cutoff) {
 			continue
+		}
+		if occupy != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), occupancyCheckTimeout)
+			occupied, occErr := occupy(ctx, m.ID)
+			cancel()
+			if occErr != nil {
+				log.Printf("idle reaper occupancy %s: %v", m.ID, occErr)
+				continue
+			}
+			if occupied {
+				_ = repo.TouchActivity(m.ID)
+				continue
+			}
 		}
 		if err := repo.End(m.ID); err != nil {
 			log.Printf("idle reaper end %s: %v", m.ID, err)
@@ -55,6 +75,7 @@ func endIdleMeetings(repo Repository, idleFor time.Duration, egressRT *EgressRun
 			Action:    "meeting_idle_ended",
 			Detail:    idleFor.String(),
 		})
+		EnqueueAfterEnd(repo, m.ID)
 		ctx, cancel := context.WithTimeout(context.Background(), idleFinalizeTimeout)
 		egressRT.FinalizeOrPlan(ctx, repo, m.ID, "", "idle end")
 		cancel()

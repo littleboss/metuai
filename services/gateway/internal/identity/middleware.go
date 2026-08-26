@@ -38,6 +38,24 @@ func AnyMeetingAuth(employeeSecret, guestSecret []byte) gin.HandlerFunc {
 	}
 }
 
+func WorkerOrEmployeeAuth(secret []byte, workerToken string) gin.HandlerFunc {
+	employee := EmployeeAuth(secret)
+	workerToken = strings.TrimSpace(workerToken)
+	return func(c *gin.Context) {
+		rawToken := bearer(c)
+		if workerToken != "" && rawToken == workerToken {
+			c.Set(CtxPrincipal, Principal{
+				Kind:        KindEmployee,
+				UserID:      "system:worker",
+				DisplayName: "worker",
+			})
+			c.Next()
+			return
+		}
+		employee(c)
+	}
+}
+
 func MustPrincipal(c *gin.Context) Principal {
 	return c.MustGet(CtxPrincipal).(Principal)
 }

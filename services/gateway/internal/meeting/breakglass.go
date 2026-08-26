@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -10,6 +11,8 @@ import (
 type BreakGlass interface {
 	Apply(meetingID, applicant, reason string) (BreakGlassRequest, error)
 	Approve(id, approver string, ttl time.Duration) (BreakGlassRequest, error)
+	Deny(id, actor string) (BreakGlassRequest, error)
+	Revoke(id, actor string) (BreakGlassRequest, error)
 	ElevatedMeetingIDs(userID string) []string
 	HasActiveGrant(meetingID, userID string) bool
 	Get(id string) (BreakGlassRequest, bool)
@@ -82,6 +85,46 @@ func (s *BreakGlassStore) Approve(id, approver string, ttl time.Duration) (Break
 	req.Approver = approver
 	req.ApprovedAt = now
 	req.ExpiresAt = now.Add(ttl)
+	s.reqs[id] = req
+	return req, nil
+}
+
+func (s *BreakGlassStore) Deny(id, actor string) (BreakGlassRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.reqs[id]
+	if !ok {
+		return BreakGlassRequest{}, fmt.Errorf("not_found")
+	}
+	if req.Status != "pending" {
+		return BreakGlassRequest{}, fmt.Errorf("not_pending")
+	}
+	if strings.TrimSpace(actor) == "" {
+		return BreakGlassRequest{}, fmt.Errorf("actor_required")
+	}
+	req.Status = "denied"
+	req.Approver = actor
+	s.reqs[id] = req
+	return req, nil
+}
+
+func (s *BreakGlassStore) Revoke(id, actor string) (BreakGlassRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.reqs[id]
+	if !ok {
+		return BreakGlassRequest{}, fmt.Errorf("not_found")
+	}
+	if req.Status != "approved" {
+		return BreakGlassRequest{}, fmt.Errorf("not_approved")
+	}
+	if strings.TrimSpace(actor) == "" {
+		return BreakGlassRequest{}, fmt.Errorf("actor_required")
+	}
+	now := time.Now().UTC()
+	req.Status = "expired"
+	req.Approver = actor
+	req.ExpiresAt = now
 	s.reqs[id] = req
 	return req, nil
 }

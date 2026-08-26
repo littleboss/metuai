@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -85,6 +86,54 @@ func (s *PGBreakGlass) Approve(id, approver string, ttl time.Duration) (BreakGla
 		 SET status=$2, approver=$3, approved_at=$4, expires_at=$5
 		 WHERE id=$1`,
 		req.ID, req.Status, req.Approver, req.ApprovedAt, req.ExpiresAt,
+	)
+	if err != nil {
+		return BreakGlassRequest{}, err
+	}
+	return req, nil
+}
+
+func (s *PGBreakGlass) Deny(id, actor string) (BreakGlassRequest, error) {
+	req, ok := s.Get(id)
+	if !ok {
+		return BreakGlassRequest{}, fmt.Errorf("not_found")
+	}
+	if req.Status != "pending" {
+		return BreakGlassRequest{}, fmt.Errorf("not_pending")
+	}
+	if strings.TrimSpace(actor) == "" {
+		return BreakGlassRequest{}, fmt.Errorf("actor_required")
+	}
+	req.Status = "denied"
+	req.Approver = actor
+	_, err := s.pg.pool.Exec(context.Background(),
+		`UPDATE break_glass_requests SET status=$2, approver=$3 WHERE id=$1`,
+		req.ID, req.Status, req.Approver,
+	)
+	if err != nil {
+		return BreakGlassRequest{}, err
+	}
+	return req, nil
+}
+
+func (s *PGBreakGlass) Revoke(id, actor string) (BreakGlassRequest, error) {
+	req, ok := s.Get(id)
+	if !ok {
+		return BreakGlassRequest{}, fmt.Errorf("not_found")
+	}
+	if req.Status != "approved" {
+		return BreakGlassRequest{}, fmt.Errorf("not_approved")
+	}
+	if strings.TrimSpace(actor) == "" {
+		return BreakGlassRequest{}, fmt.Errorf("actor_required")
+	}
+	now := time.Now().UTC()
+	req.Status = "expired"
+	req.Approver = actor
+	req.ExpiresAt = now
+	_, err := s.pg.pool.Exec(context.Background(),
+		`UPDATE break_glass_requests SET status=$2, approver=$3, expires_at=$4 WHERE id=$1`,
+		req.ID, req.Status, req.Approver, req.ExpiresAt,
 	)
 	if err != nil {
 		return BreakGlassRequest{}, err

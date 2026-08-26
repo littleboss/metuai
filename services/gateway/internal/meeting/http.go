@@ -3,7 +3,9 @@ package meeting
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,8 +36,10 @@ type guestBody struct {
 }
 
 type guestEmailVerificationBody struct {
-	Email string `json:"email"`
-	Code  string `json:"code"`
+	Email   string `json:"email"`
+	Code    string `json:"code"`
+	Token   string `json:"token"`
+	GuestID string `json:"guest_id"`
 }
 
 type recordingAckBody struct {
@@ -44,6 +48,15 @@ type recordingAckBody struct {
 
 type kickBody struct {
 	Identity string `json:"identity"`
+}
+
+type livekitTokenBody struct {
+	DeviceID string `json:"device_id"`
+}
+
+type shareBody struct {
+	Email string `json:"email"`
+	Code  string `json:"code"`
 }
 
 type chatBody struct {
@@ -61,7 +74,10 @@ func RegisterRoutes(
 	knowledgeIdx knowledge.Indexer,
 	breakGlass BreakGlass,
 	guestVerifier *GuestEmailVerifier,
+	mediaSigner MediaURLSigner,
 ) {
+	registerPipelineTaskRoutes(r, repo, employeeSecret)
+
 	r.POST("/v1/meetings", identity.EmployeeAuth(employeeSecret), func(c *gin.Context) {
 		var body createBody
 		_ = c.ShouldBindJSON(&body)
@@ -111,6 +127,36 @@ func RegisterRoutes(
 			})
 		}
 		c.JSON(http.StatusOK, gin.H{"meetings": items})
+	})
+
+	r.GET("/v1/directory/employees", identity.EmployeeAuth(employeeSecret), func(c *gin.Context) {
+		principal := identity.MustPrincipal(c)
+		people, err := ListDirectoryEmployees(repo, principal.UserID, c.Query("q"))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"employees": people})
+	})
+
+	r.POST("/v1/session/login", identity.EmployeeAuth(employeeSecret), func(c *gin.Context) {
+		principal := identity.MustPrincipal(c)
+		_ = repo.AppendAudit(AuditEvent{
+			ActorKey: PrincipalKey(principal.Kind, principal.UserID, principal.GuestID),
+			Action:   "employee_login",
+			Detail:   principal.Email,
+		})
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	r.POST("/v1/session/logout", identity.EmployeeAuth(employeeSecret), func(c *gin.Context) {
+		principal := identity.MustPrincipal(c)
+		_ = repo.AppendAudit(AuditEvent{
+			ActorKey: PrincipalKey(principal.Kind, principal.UserID, principal.GuestID),
+			Action:   "employee_logout",
+			Detail:   principal.Email,
+		})
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	r.GET("/v1/meetings/:id", identity.AnyMeetingAuth(employeeSecret, guestSecret), func(c *gin.Context) {
@@ -176,6 +222,7 @@ func RegisterRoutes(
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		_ = repo.UpsertGuestPresence(meetingID, guestID, body.DisplayName)
 		_ = repo.AppendAudit(AuditEvent{
 			MeetingID: meetingID,
 			ActorKey:  "guest:" + guestID,
@@ -213,7 +260,10 @@ func RegisterRoutes(
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrGuestEmailVerificationUnavailable):
-				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "guest_email_verification_unavailable"})
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error": "guest_email_verification_unavailable",
+					"hint":  "use_in_room_code",
+				})
 			case errors.Is(err, ErrGuestEmailVerificationInvalid):
 				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_email"})
 			default:
@@ -265,23 +315,7 @@ func RegisterRoutes(
 			}
 			return
 		}
-		if err := repo.AddGuestEmail(meetingID, challenge.Email); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if knowledgeIdx != nil {
-			if err := IndexMeetingKnowledge(c.Request.Context(), repo, knowledgeIdx, meetingID, nil); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "guest_acl_index_update_failed"})
-				return
-			}
-		}
-		accessToken, err := identity.IssueGuestSession(identity.Principal{
-			Kind:        identity.KindGuest,
-			GuestID:     principal.GuestID,
-			MeetingID:   meetingID,
-			DisplayName: principal.DisplayName,
-			Email:       challenge.Email,
-		}, guestSecret, verifiedGuestSessionTTL)
+		accessToken, err := grantVerifiedGuestAccess(c.Request.Context(), repo, knowledgeIdx, guestSecret, challenge, principal.DisplayName, guestEmailSourceParticipant)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -293,6 +327,112 @@ func RegisterRoutes(
 			Detail:    challenge.Email,
 		})
 		c.JSON(http.StatusOK, gin.H{"access_token": accessToken, "email": challenge.Email})
+	})
+
+	r.POST("/v1/meetings/:id/guest-email-verification/magic", func(c *gin.Context) {
+		meetingID := c.Param("id")
+		if _, ok := repo.Get(meetingID); !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		var body guestEmailVerificationBody
+		if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Token) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
+			return
+		}
+		if guestVerifier == nil {
+			writeGuestVerificationConfirmError(c, ErrGuestEmailVerificationUnavailable)
+			return
+		}
+		challenge, err := guestVerifier.ConfirmMagic(meetingID, body.Token)
+		if err != nil {
+			writeGuestVerificationConfirmError(c, err)
+			return
+		}
+		source := guestEmailSourceParticipant
+		if strings.HasPrefix(challenge.GuestID, "share:") {
+			source = guestEmailSourceShared
+		}
+		accessToken, err := grantVerifiedGuestAccess(c.Request.Context(), repo, knowledgeIdx, guestSecret, challenge, "", source)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		_ = repo.AppendAudit(AuditEvent{
+			MeetingID: meetingID,
+			ActorKey:  "guest:" + challenge.GuestID,
+			Action:    "guest_email_verified",
+			Detail:    challenge.Email + ":magic",
+		})
+		c.JSON(http.StatusOK, gin.H{"access_token": accessToken, "email": challenge.Email})
+	})
+
+	r.POST("/v1/meetings/:id/guest-email-verification/in-room", employeeAuth, func(c *gin.Context) {
+		meetingID := c.Param("id")
+		current, ok := repo.Get(meetingID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		if !requireOrganizer(c, repo, current) {
+			return
+		}
+		if guestVerifier == nil {
+			writeGuestVerificationRequestError(c, ErrGuestEmailVerificationUnavailable)
+			return
+		}
+		var body guestEmailVerificationBody
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "email required"})
+			return
+		}
+		guestID := normalizeIssuedGuestID(body.GuestID)
+		email := normalizeGuestEmail(body.Email)
+		if guestID == "" && email != "" && repo.HasShare(meetingID, email) {
+			guestID = shareGuestID(email)
+		}
+		issued, err := guestVerifier.IssueInRoom(current, guestID, email)
+		if err != nil {
+			writeGuestVerificationRequestError(c, err)
+			return
+		}
+		principal := identity.MustPrincipal(c)
+		_ = repo.AppendAudit(AuditEvent{
+			MeetingID: meetingID,
+			ActorKey:  PrincipalKey(principal.Kind, principal.UserID, principal.GuestID),
+			Action:    "guest_in_room_code_issued",
+			Detail:    issued.Email,
+		})
+		c.JSON(http.StatusOK, gin.H{
+			"ok":         true,
+			"email":      issued.Email,
+			"guest_id":   issued.GuestID,
+			"code":       issued.Code,
+			"magic_url":  issued.MagicURL,
+			"expires_at": issued.ExpiresAt,
+		})
+	})
+
+	r.GET("/v1/meetings/:id/guest-participants", employeeAuth, func(c *gin.Context) {
+		meetingID := c.Param("id")
+		current, ok := repo.Get(meetingID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		if !requireOrganizer(c, repo, current) {
+			return
+		}
+		guests, err := repo.ListGuestParticipants(meetingID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		ids := make([]string, 0, len(guests))
+		for _, guest := range guests {
+			ids = append(ids, guest.GuestID)
+		}
+		c.JSON(http.StatusOK, gin.H{"guests": guests, "guest_ids": ids})
 	})
 
 	r.POST("/v1/meetings/:id/recording-ack", auth, func(c *gin.Context) {
@@ -333,6 +473,9 @@ func RegisterRoutes(
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
+		}
+		if principal.Kind == identity.KindGuest {
+			_ = repo.UpsertGuestPresence(meetingID, principal.GuestID, principal.DisplayName)
 		}
 		_ = repo.AppendAudit(AuditEvent{
 			MeetingID: meetingID,
@@ -385,6 +528,10 @@ func RegisterRoutes(
 			c.JSON(http.StatusForbidden, gin.H{"error": "kicked"})
 			return
 		}
+
+		var tokenBody livekitTokenBody
+		_ = c.ShouldBindJSON(&tokenBody)
+		identityID = lktoken.DeviceIdentity(identityID, tokenBody.DeviceID)
 
 		principalKey := PrincipalKey(principal.Kind, principal.UserID, principal.GuestID)
 		if !repo.HasAck(meetingID, principalKey) {
@@ -485,8 +632,30 @@ func RegisterRoutes(
 			ActorKey:  PrincipalKey(principal.Kind, principal.UserID, principal.GuestID),
 			Action:    "meeting_ended",
 		})
+		EnqueueAfterEnd(repo, meetingID)
 		artifacts, _ := repo.ListMediaArtifacts(meetingID)
 		c.JSON(http.StatusOK, gin.H{"ok": true, "ended": true, "artifacts": artifacts})
+	})
+
+	r.POST("/v1/meetings/:id/leave", auth, func(c *gin.Context) {
+		meetingID := c.Param("id")
+		current, ok := repo.Get(meetingID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		principal := identity.MustPrincipal(c)
+		if !canAccessMeetingSession(principal, current, repo) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		actor := PrincipalKey(principal.Kind, principal.UserID, principal.GuestID)
+		_ = repo.AppendAudit(AuditEvent{
+			MeetingID: meetingID,
+			ActorKey:  actor,
+			Action:    "meeting_left",
+		})
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	r.POST("/v1/meetings/:id/reset-password", employeeAuth, func(c *gin.Context) {
@@ -537,24 +706,41 @@ func RegisterRoutes(
 			return
 		}
 		identityID := strings.TrimSpace(body.Identity)
-		if isMeetingManager(repo, current, identityID) {
+		userKey := lktoken.UserKey(identityID)
+		if isMeetingManager(repo, current, userKey) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot_kick_organizer"})
 			return
 		}
-		if err := repo.Kick(meetingID, identityID); err != nil {
+		if err := repo.Kick(meetingID, userKey); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		// 尽力从 LiveKit 房间移除；失败不回滚已落库的踢出状态。
-		_ = lktoken.RemoveParticipant(context.Background(), livekitURL, livekitKey, livekitSecret, meetingID, identityID)
+		// 尽力从 LiveKit 房间移除该用户所有设备；失败不回滚已落库的踢出状态。
+		_ = lktoken.RemoveByUserKey(context.Background(), livekitURL, livekitKey, livekitSecret, meetingID, identityID)
 		principal := identity.MustPrincipal(c)
 		_ = repo.AppendAudit(AuditEvent{
 			MeetingID: meetingID,
 			ActorKey:  PrincipalKey(principal.Kind, principal.UserID, principal.GuestID),
 			Action:    "participant_kicked",
-			Detail:    identityID,
+			Detail:    userKey,
 		})
-		c.JSON(http.StatusOK, gin.H{"ok": true, "identity": identityID})
+		c.JSON(http.StatusOK, gin.H{"ok": true, "identity": userKey})
+	})
+
+	r.GET("/v1/meetings/:id/shared-readers", employeeAuth, func(c *gin.Context) {
+		handleListShares(c, repo)
+	})
+	r.POST("/v1/meetings/:id/shared-readers", employeeAuth, func(c *gin.Context) {
+		handleAddShare(c, repo, guestVerifier)
+	})
+	r.DELETE("/v1/meetings/:id/shared-readers", employeeAuth, func(c *gin.Context) {
+		handleRemoveShare(c, repo, knowledgeIdx)
+	})
+	r.POST("/v1/meetings/:id/shared-readers/verify", func(c *gin.Context) {
+		handleShareVerify(c, repo, guestVerifier)
+	})
+	r.POST("/v1/meetings/:id/shared-readers/confirm", func(c *gin.Context) {
+		handleShareConfirm(c, repo, guestVerifier, guestSecret, knowledgeIdx)
 	})
 
 	r.POST("/v1/meetings/:id/chat", auth, func(c *gin.Context) {
@@ -629,7 +815,8 @@ func RegisterRoutes(
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"artifacts": items})
+		recordArtifactView(repo, meetingID, PrincipalKey(principal.Kind, principal.UserID, principal.GuestID), "media")
+		c.JSON(http.StatusOK, gin.H{"artifacts": signMediaURLs(c, items, mediaSigner, s3Bucket)})
 	})
 
 	// 员工回传本机录音审计（架构 §5.2）；只接受 local_recording_* 动作，防乱写。
@@ -724,6 +911,7 @@ func RegisterRoutes(
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "stage": current.PipelineStage})
 			return
 		}
+		CompleteOpenPipelineTasks(repo, meetingID, PipelineKindFake)
 		c.JSON(http.StatusOK, gin.H{"ok": true, "pipeline_stage": stage})
 	})
 
@@ -786,6 +974,7 @@ func RegisterRoutes(
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		CompleteOpenPipelineTasks(repo, meetingID, PipelineKindASR)
 		c.JSON(http.StatusOK, gin.H{
 			"ok":             true,
 			"pipeline_stage": stage,
@@ -817,6 +1006,34 @@ func RegisterRoutes(
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true, "pipeline_stage": stage, "backend": "stub"})
+	})
+
+	r.POST("/v1/meetings/:id/pipeline/manual-review", employeeAuth, func(c *gin.Context) {
+		meetingID := c.Param("id")
+		current, ok := repo.Get(meetingID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		if !current.Ended {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "meeting_not_ended"})
+			return
+		}
+		if !requireOrganizer(c, repo, current) {
+			return
+		}
+		var body struct {
+			Reason string `json:"reason"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		principal := identity.MustPrincipal(c)
+		actor := PrincipalKey(principal.Kind, principal.UserID, principal.GuestID)
+		stage, err := MarkManualReview(repo, meetingID, actor, body.Reason)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "pipeline_stage": stage})
 	})
 
 	r.GET("/v1/meetings/:id/pipeline", auth, func(c *gin.Context) {
@@ -856,6 +1073,7 @@ func RegisterRoutes(
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		recordArtifactView(repo, meetingID, PrincipalKey(principal.Kind, principal.UserID, principal.GuestID), "transcript")
 		c.JSON(http.StatusOK, gin.H{"segments": segs})
 	})
 
@@ -876,10 +1094,101 @@ func RegisterRoutes(
 			c.JSON(http.StatusNotFound, gin.H{"error": "summary_not_ready"})
 			return
 		}
+		recordArtifactView(repo, meetingID, PrincipalKey(principal.Kind, principal.UserID, principal.GuestID), "summary")
 		c.JSON(http.StatusOK, sum)
 	})
 
-	// 显式下载：与「在线查看」同一套 ACL，但每次必记 artifact_download 审计。
+	r.PATCH("/v1/meetings/:id/summary", employeeAuth, func(c *gin.Context) {
+		meetingID := c.Param("id")
+		current, ok := repo.Get(meetingID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		principal := identity.MustPrincipal(c)
+		if !canEditMeetingArtifacts(principal, current, repo) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "employee_participant_required"})
+			return
+		}
+		var next MeetingSummary
+		if err := c.ShouldBindJSON(&next); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body"})
+			return
+		}
+		actor := PrincipalKey(principal.Kind, principal.UserID, principal.GuestID)
+		updated, err := ApplySummaryEdit(repo, meetingID, actor, next)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, ErrSummaryNotReady) {
+				status = http.StatusNotFound
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
+		if knowledgeIdx != nil {
+			_ = IndexMeetingKnowledge(c.Request.Context(), repo, knowledgeIdx, meetingID, nil)
+		}
+		c.JSON(http.StatusOK, updated)
+	})
+
+	r.POST("/v1/meetings/:id/summary/action-items/:idx/complete", employeeAuth, func(c *gin.Context) {
+		meetingID := c.Param("id")
+		current, ok := repo.Get(meetingID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		principal := identity.MustPrincipal(c)
+		if !canEditMeetingArtifacts(principal, current, repo) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "employee_participant_required"})
+			return
+		}
+		idx, err := strconv.Atoi(c.Param("idx"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_index"})
+			return
+		}
+		actor := PrincipalKey(principal.Kind, principal.UserID, principal.GuestID)
+		updated, err := CompleteActionItem(repo, meetingID, actor, idx)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, ErrSummaryNotReady) {
+				status = http.StatusNotFound
+			}
+			if errors.Is(err, ErrActionAlreadyDone) {
+				c.JSON(http.StatusOK, updated)
+				return
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
+		if knowledgeIdx != nil {
+			_ = IndexMeetingKnowledge(c.Request.Context(), repo, knowledgeIdx, meetingID, nil)
+		}
+		c.JSON(http.StatusOK, updated)
+	})
+
+	r.GET("/v1/meetings/:id/summary/revisions", auth, func(c *gin.Context) {
+		meetingID := c.Param("id")
+		current, ok := repo.Get(meetingID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		principal := identity.MustPrincipal(c)
+		if !canAccessMeetingArtifacts(principal, current, repo, breakGlass) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		items, err := repo.ListSummaryRevisions(meetingID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"revisions": items})
+	})
+
+	// 显式下载或导出：与「在线查看」同一套 ACL；下载记 artifact_download，转写+纪要打包记 artifact_export。
 	r.POST("/v1/meetings/:id/artifacts/download", auth, func(c *gin.Context) {
 		meetingID := c.Param("id")
 		current, ok := repo.Get(meetingID)
@@ -893,7 +1202,7 @@ func RegisterRoutes(
 			return
 		}
 		var body struct {
-			Kind       string `json:"kind"` // transcript | summary | media
+			Kind       string `json:"kind"` // transcript | summary | media | export
 			ArtifactID string `json:"artifact_id"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil || body.Kind == "" {
@@ -905,10 +1214,14 @@ func RegisterRoutes(
 		if body.ArtifactID != "" {
 			detail = body.Kind + ":" + body.ArtifactID
 		}
+		action := "artifact_download"
+		if body.Kind == "export" {
+			action = "artifact_export"
+		}
 		_ = repo.AppendAudit(AuditEvent{
 			MeetingID: meetingID,
 			ActorKey:  actor,
-			Action:    "artifact_download",
+			Action:    action,
 			Detail:    detail,
 		})
 
@@ -927,6 +1240,18 @@ func RegisterRoutes(
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"kind": "summary", "summary": sum, "audited": true})
+		case "export":
+			segs, err := repo.ListTranscript(meetingID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			payload := gin.H{"kind": "export", "segments": segs, "audited": true, "has_summary": false}
+			if sum, ok := repo.GetSummary(meetingID); ok {
+				payload["summary"] = sum
+				payload["has_summary"] = true
+			}
+			c.JSON(http.StatusOK, payload)
 		case "media":
 			arts, err := repo.ListMediaArtifacts(meetingID)
 			if err != nil {
@@ -947,7 +1272,8 @@ func RegisterRoutes(
 				}
 				arts = filtered
 			}
-			c.JSON(http.StatusOK, gin.H{"kind": "media", "artifacts": arts, "audited": true})
+			items := signMediaURLs(c, arts, mediaSigner, s3Bucket)
+			c.JSON(http.StatusOK, gin.H{"kind": "media", "artifacts": items, "audited": true})
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown_kind"})
 		}
@@ -1025,6 +1351,72 @@ func RegisterRoutes(
 		c.JSON(http.StatusOK, req)
 	})
 
+	r.POST("/v1/meetings/:id/break-glass/:reqId/deny", employeeAuth, func(c *gin.Context) {
+		if breakGlass == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "break_glass_not_configured"})
+			return
+		}
+		meetingID := c.Param("id")
+		if _, ok := repo.Get(meetingID); !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		principal := identity.MustPrincipal(c)
+		if !principal.HasRole("audit_admin") && !principal.HasRole("system_admin") {
+			c.JSON(http.StatusForbidden, gin.H{"error": "approver_role_required"})
+			return
+		}
+		req, err := breakGlass.Deny(c.Param("reqId"), principal.UserID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.MeetingID != meetingID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "meeting_mismatch"})
+			return
+		}
+		_ = repo.AppendAudit(AuditEvent{
+			MeetingID: meetingID,
+			ActorKey:  PrincipalKey(principal.Kind, principal.UserID, principal.GuestID),
+			Action:    "break_glass_deny",
+			Detail:    req.ID + ":applicant=" + req.Applicant,
+		})
+		c.JSON(http.StatusOK, req)
+	})
+
+	r.POST("/v1/meetings/:id/break-glass/:reqId/revoke", employeeAuth, func(c *gin.Context) {
+		if breakGlass == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "break_glass_not_configured"})
+			return
+		}
+		meetingID := c.Param("id")
+		if _, ok := repo.Get(meetingID); !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			return
+		}
+		principal := identity.MustPrincipal(c)
+		if !principal.HasRole("audit_admin") && !principal.HasRole("system_admin") {
+			c.JSON(http.StatusForbidden, gin.H{"error": "approver_role_required"})
+			return
+		}
+		req, err := breakGlass.Revoke(c.Param("reqId"), principal.UserID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.MeetingID != meetingID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "meeting_mismatch"})
+			return
+		}
+		_ = repo.AppendAudit(AuditEvent{
+			MeetingID: meetingID,
+			ActorKey:  PrincipalKey(principal.Kind, principal.UserID, principal.GuestID),
+			Action:    "break_glass_revoke",
+			Detail:    req.ID + ":applicant=" + req.Applicant,
+		})
+		c.JSON(http.StatusOK, req)
+	})
+
 	r.GET("/v1/meetings/:id/break-glass", employeeAuth, func(c *gin.Context) {
 		principal := identity.MustPrincipal(c)
 		if !principal.HasRole("audit_admin") && !principal.HasRole("system_admin") {
@@ -1041,6 +1433,45 @@ func RegisterRoutes(
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"requests": breakGlass.ListForMeeting(meetingID)})
+	})
+
+	r.GET("/v1/retention", employeeAuth, func(c *gin.Context) {
+		principal := identity.MustPrincipal(c)
+		if !principal.HasRole("system_admin") {
+			c.JSON(http.StatusForbidden, gin.H{"error": "system_admin_required"})
+			return
+		}
+		policy, err := repo.GetRetentionPolicy()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, policy)
+	})
+
+	r.PUT("/v1/retention", employeeAuth, func(c *gin.Context) {
+		principal := identity.MustPrincipal(c)
+		if !principal.HasRole("system_admin") {
+			c.JSON(http.StatusForbidden, gin.H{"error": "system_admin_required"})
+			return
+		}
+		var body RetentionPolicy
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body"})
+			return
+		}
+		body.UpdatedBy = principal.UserID
+		if err := repo.SetRetentionPolicy(body); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		policy, _ := repo.GetRetentionPolicy()
+		_ = repo.AppendAudit(AuditEvent{
+			ActorKey: PrincipalKey(principal.Kind, principal.UserID, principal.GuestID),
+			Action:   "retention_policy_updated",
+			Detail:   fmt.Sprintf("media=%d video=%d knowledge=%d", policy.MediaTTLSeconds, policy.VideoTTLSeconds, policy.KnowledgeTTLSeconds),
+		})
+		c.JSON(http.StatusOK, policy)
 	})
 }
 
@@ -1087,6 +1518,52 @@ func canAccessMeetingArtifacts(principal identity.Principal, current Meeting, re
 		}
 	}
 	return false
+}
+
+func canEditMeetingArtifacts(principal identity.Principal, current Meeting, repo Repository) bool {
+	if principal.Kind != identity.KindEmployee {
+		return false
+	}
+	if isMeetingManager(repo, current, principal.UserID) {
+		return true
+	}
+	if repo.HasAck(current.ID, PrincipalKey(principal.Kind, principal.UserID, principal.GuestID)) {
+		return true
+	}
+	if parts, err := repo.ListEmployeeParticipantIDs(current.ID); err == nil {
+		for _, uid := range parts {
+			if uid == principal.UserID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func signMediaURLs(c *gin.Context, arts []MediaArtifact, mediaSigner MediaURLSigner, s3Bucket string) []MediaArtifact {
+	out := make([]MediaArtifact, 0, len(arts))
+	for _, a := range arts {
+		if mediaSigner != nil && a.ObjectKey != "" && a.Status == "ready" {
+			key := stripBucketPrefix(a.ObjectKey, s3Bucket)
+			if url, err := mediaSigner.SignGetURL(c.Request.Context(), key, 15*time.Minute); err == nil {
+				a.DownloadURL = url
+			}
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func stripBucketPrefix(objectKey, bucket string) string {
+	objectKey = strings.TrimSpace(objectKey)
+	bucket = strings.TrimSpace(strings.Trim(bucket, "/"))
+	if bucket == "" {
+		return objectKey
+	}
+	if after, ok := strings.CutPrefix(objectKey, bucket+"/"); ok {
+		return after
+	}
+	return objectKey
 }
 
 func mustGuestEmails(repo Repository, meetingID string) []string {
@@ -1183,4 +1660,13 @@ func membersFromCreate(body createBody, principal identity.Principal) []MeetingM
 		})
 	}
 	return members
+}
+
+func recordArtifactView(repo Repository, meetingID, actor, resource string) {
+	_ = repo.AppendAudit(AuditEvent{
+		MeetingID: meetingID,
+		ActorKey:  actor,
+		Action:    "artifact_view",
+		Detail:    resource,
+	})
 }

@@ -46,10 +46,7 @@ func ApplyASRResult(repo Repository, meetingID, actorKey, backend string, inputs
 		if in.EndMs < in.StartMs || in.StartMs < 0 {
 			return "", fmt.Errorf("invalid_time_at_%d", i)
 		}
-		lang := in.Language
-		if lang == "" {
-			lang = "zh-CN"
-		}
+		lang := languageOrDetect(in.Language, text)
 		model := in.ASRModel
 		if model == "" {
 			model = "unknown"
@@ -90,6 +87,9 @@ func ApplyASRResult(repo Repository, meetingID, actorKey, backend string, inputs
 		Detail:    StageTranscribing,
 	})
 
+	members, _ := repo.ListMembers(meetingID)
+	current, _ = repo.Get(meetingID)
+	segments = BindTranscriptSpeakers(members, current.OrganizerID, segments)
 	if err := repo.ReplaceTranscript(meetingID, segments); err != nil {
 		_ = repo.SetPipelineStage(meetingID, StageRetryableError)
 		return "", err
@@ -123,6 +123,9 @@ func RunASRStub(repo Repository, meetingID, actorKey string) (string, error) {
 		return "", fmt.Errorf("meeting not found")
 	}
 	arts, _ := repo.ListMediaArtifacts(meetingID)
+	if !HasAuthoritativeAudio(arts) {
+		return MarkManualReview(repo, meetingID, actorKey, "no participant_track or local_mic; refusing silent stub transcript")
+	}
 	source := "egress"
 	for _, a := range arts {
 		if a.Kind == KindLocalMic && a.Status == "ready" {

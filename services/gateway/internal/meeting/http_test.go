@@ -80,7 +80,7 @@ func testRouterWithEgressAndVerification(t *testing.T, allowEmployeeWeb bool, or
 	if orch != nil {
 		rt = NewEgressRuntime(orch, "metuai-media")
 	}
-	RegisterRoutes(r, store, secretEmp, secretGst, "ws://127.0.0.1:17880", "devkey", "secret", allowEmployeeWeb, "metuai-media", rt, knowledge.NewMemoryIndex(), NewBreakGlassStore(), NewGuestEmailVerifier(store, sender))
+	RegisterRoutes(r, store, secretEmp, secretGst, "ws://127.0.0.1:17880", "devkey", "secret", allowEmployeeWeb, "metuai-media", rt, knowledge.NewMemoryIndex(), NewBreakGlassStore(), NewGuestEmailVerifier(store, sender), nil)
 	return r, store, secretEmp, secretGst
 }
 
@@ -697,5 +697,336 @@ func TestGuestSuppliedEmailIsNotTreatedAsVerified(t *testing.T) {
 	view := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", guest, "")
 	if view.Code != http.StatusForbidden {
 		t.Fatalf("unverified guest must not read post-meeting artifacts: %d %s", view.Code, view.Body.String())
+	}
+}
+
+func TestEmployeeCanReviseSummaryAndGuestCannot(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	organizer := employeeJWT(t, secretEmp)
+	id, password := createMeeting(t, r, organizer)
+	guestSession := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+password+`","display_name":"Bob"}`)
+	if guestSession.Code != http.StatusOK {
+		t.Fatalf("guest session %d %s", guestSession.Code, guestSession.Body.String())
+	}
+	guest := guestToken(t, guestSession.Body.Bytes())
+	if ack := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/recording-ack", guest, ""); ack.Code != http.StatusOK {
+		t.Fatalf("guest ack %d %s", ack.Code, ack.Body.String())
+	}
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", organizer, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d", end.Code)
+	}
+	if run := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/pipeline/run-fake", organizer, ""); run.Code != http.StatusOK {
+		t.Fatalf("run-fake %d %s", run.Code, run.Body.String())
+	}
+
+	patch := doJSON(t, r, http.MethodPatch, "/v1/meetings/"+id+"/summary", organizer, `{
+		"summary":"人工修订后的摘要",
+		"decisions":[{"text":"保留原稿","source_segment_ids":[]}],
+		"action_items":[{"task":"内部跟进","owner_user_id":"u-1"}],
+		"risks":[],
+		"open_questions":[]
+	}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("patch %d %s", patch.Code, patch.Body.String())
+	}
+	var sum MeetingSummary
+	if err := json.Unmarshal(patch.Body.Bytes(), &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.Summary != "人工修订后的摘要" || sum.OriginalJSON == "" {
+		t.Fatalf("revised summary %+v", sum)
+	}
+
+	revs := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary/revisions", organizer, "")
+	if revs.Code != http.StatusOK {
+		t.Fatalf("revisions %d %s", revs.Code, revs.Body.String())
+	}
+
+	denied := doJSON(t, r, http.MethodPatch, "/v1/meetings/"+id+"/summary", guest, `{"summary":"嘉宾篡改"}`)
+	if denied.Code == http.StatusOK {
+		t.Fatalf("guest must not revise summary: %d %s", denied.Code, denied.Body.String())
+	}
+
+	stranger := employeeJWTFor(t, secretEmp, "u-stranger", "Eve")
+	blocked := doJSON(t, r, http.MethodPatch, "/v1/meetings/"+id+"/summary", stranger, `{"summary":"路人修订"}`)
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("stranger patch %d %s", blocked.Code, blocked.Body.String())
+	}
+}
+
+func TestGuestMagicLinkAndLeaveAndArtifactView(t *testing.T) {
+	sender := &capturedVerificationSender{}
+	r, store, secretEmp, _ := testRouterWithEgressAndVerification(t, true, nil, sender)
+	organizer := employeeJWT(t, secretEmp)
+	id, password := createMeeting(t, r, organizer)
+
+	guestSession := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+password+`","display_name":"Bob"}`)
+	if guestSession.Code != http.StatusOK {
+		t.Fatalf("guest session %d %s", guestSession.Code, guestSession.Body.String())
+	}
+	guest := guestToken(t, guestSession.Body.Bytes())
+	if ack := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/recording-ack", guest, ""); ack.Code != http.StatusOK {
+		t.Fatalf("guest ack %d %s", ack.Code, ack.Body.String())
+	}
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-email-verification", guest,
+		`{"email":"bob@example.com"}`); got.Code != http.StatusOK {
+		t.Fatalf("request verification %d %s", got.Code, got.Body.String())
+	}
+	if sender.mail.MagicToken == "" || !strings.Contains(sender.mail.MagicURL, sender.mail.MagicToken) {
+		t.Fatalf("magic mail = %+v", sender.mail)
+	}
+
+	leave := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/leave", guest, "")
+	if leave.Code != http.StatusOK {
+		t.Fatalf("leave %d %s", leave.Code, leave.Body.String())
+	}
+
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", organizer, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d %s", end.Code, end.Body.String())
+	}
+	tasks := doJSON(t, r, http.MethodGet, "/v1/pipeline/tasks?meeting_id="+id, organizer, "")
+	if tasks.Code != http.StatusOK || !strings.Contains(tasks.Body.String(), `"status":"queued"`) {
+		t.Fatalf("queued task %d %s", tasks.Code, tasks.Body.String())
+	}
+	if run := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/pipeline/run-fake", organizer, ""); run.Code != http.StatusOK {
+		t.Fatalf("run fake %d %s", run.Code, run.Body.String())
+	}
+
+	magic := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-email-verification/magic", "",
+		`{"token":"`+sender.mail.MagicToken+`"}`)
+	if magic.Code != http.StatusOK {
+		t.Fatalf("magic confirm %d %s", magic.Code, magic.Body.String())
+	}
+	var payload struct {
+		Token string `json:"access_token"`
+	}
+	if err := json.Unmarshal(magic.Body.Bytes(), &payload); err != nil || payload.Token == "" {
+		t.Fatalf("magic token body=%s err=%v", magic.Body.String(), err)
+	}
+	summary := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", payload.Token, "")
+	if summary.Code != http.StatusOK {
+		t.Fatalf("verified summary %d %s", summary.Code, summary.Body.String())
+	}
+
+	audits, err := store.ListAudit(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawLeave, sawView, sawVerified bool
+	for _, event := range audits {
+		switch event.Action {
+		case "meeting_left":
+			sawLeave = true
+		case "artifact_view":
+			sawView = event.Detail == "summary" || sawView
+		case "guest_email_verified":
+			sawVerified = true
+		}
+	}
+	if !sawLeave || !sawView || !sawVerified {
+		t.Fatalf("audits leave=%v view=%v verified=%v events=%+v", sawLeave, sawView, sawVerified, audits)
+	}
+}
+
+func TestPipelineClaimRetryAndDirectory(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	organizer := employeeJWT(t, secretEmp)
+	created := doJSON(t, r, http.MethodPost, "/v1/meetings", organizer,
+		`{"title":"dir","employee_ids":["u-9"]}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	var meeting struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &meeting); err != nil {
+		t.Fatal(err)
+	}
+	dir := doJSON(t, r, http.MethodGet, "/v1/directory/employees?q=u-9", organizer, "")
+	if dir.Code != http.StatusOK || !strings.Contains(dir.Body.String(), `"user_id":"u-9"`) {
+		t.Fatalf("directory %d %s", dir.Code, dir.Body.String())
+	}
+
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/end", organizer, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d %s", end.Code, end.Body.String())
+	}
+	claimed := doJSON(t, r, http.MethodPost, "/v1/pipeline/tasks/claim", organizer, `{"owner":"worker-1","limit":1}`)
+	if claimed.Code != http.StatusOK || !strings.Contains(claimed.Body.String(), `"status":"leased"`) {
+		t.Fatalf("claim %d %s", claimed.Code, claimed.Body.String())
+	}
+	var payload struct {
+		Tasks []PipelineTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(claimed.Body.Bytes(), &payload); err != nil || len(payload.Tasks) != 1 {
+		t.Fatalf("claim payload %s err=%v", claimed.Body.String(), err)
+	}
+	failed := doJSON(t, r, http.MethodPost, "/v1/pipeline/tasks/"+payload.Tasks[0].ID+"/fail", organizer,
+		`{"error":"no audio"}`)
+	if failed.Code != http.StatusOK || !strings.Contains(failed.Body.String(), `"status":"failed"`) {
+		t.Fatalf("fail %d %s", failed.Code, failed.Body.String())
+	}
+	if mark := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/pipeline/manual-review", organizer,
+		`{"reason":"no tracks"}`); mark.Code != http.StatusOK {
+		t.Fatalf("manual review %d %s", mark.Code, mark.Body.String())
+	}
+	queue := doJSON(t, r, http.MethodGet, "/v1/pipeline/manual-review", organizer, "")
+	if queue.Code != http.StatusOK || !strings.Contains(queue.Body.String(), meeting.ID) {
+		t.Fatalf("queue %d %s", queue.Code, queue.Body.String())
+	}
+	retry := doJSON(t, r, http.MethodPost, "/v1/meetings/"+meeting.ID+"/pipeline/retry", organizer, "")
+	if retry.Code != http.StatusOK || !strings.Contains(retry.Body.String(), `"pipeline_stage":"RECORDING_FINALIZED"`) {
+		t.Fatalf("retry %d %s", retry.Code, retry.Body.String())
+	}
+}
+
+func TestInRoomGuestCodeWorksWithoutSMTP(t *testing.T) {
+	r, store, secretEmp, _ := testRouter(t)
+	organizer := employeeJWT(t, secretEmp)
+	id, password := createMeeting(t, r, organizer)
+
+	guestSession := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-session", "",
+		`{"password":"`+password+`","display_name":"Bob"}`)
+	if guestSession.Code != http.StatusOK {
+		t.Fatalf("guest session %d %s", guestSession.Code, guestSession.Body.String())
+	}
+	var session struct {
+		GuestID string `json:"guest_id"`
+		Token   string `json:"token"`
+	}
+	if err := json.Unmarshal(guestSession.Body.Bytes(), &session); err != nil || session.GuestID == "" {
+		t.Fatalf("session body=%s err=%v", guestSession.Body.String(), err)
+	}
+	if ack := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/recording-ack", session.Token, ""); ack.Code != http.StatusOK {
+		t.Fatalf("ack %d %s", ack.Code, ack.Body.String())
+	}
+
+	if got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-email-verification", session.Token,
+		`{"email":"bob@example.com"}`); got.Code != http.StatusServiceUnavailable || !strings.Contains(got.Body.String(), "use_in_room_code") {
+		t.Fatalf("smtp-less request %d %s", got.Code, got.Body.String())
+	}
+
+	issued := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-email-verification/in-room", organizer,
+		`{"email":"bob@example.com","guest_id":"guest:`+session.GuestID+`"}`)
+	if issued.Code != http.StatusOK {
+		t.Fatalf("in-room %d %s", issued.Code, issued.Body.String())
+	}
+	var challenge struct {
+		Code     string `json:"code"`
+		MagicURL string `json:"magic_url"`
+	}
+	if err := json.Unmarshal(issued.Body.Bytes(), &challenge); err != nil || len(challenge.Code) != 6 || challenge.MagicURL == "" {
+		t.Fatalf("issued %+v err=%v body=%s", challenge, err, issued.Body.String())
+	}
+
+	listed := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/guest-participants", organizer, "")
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), session.GuestID) || !strings.Contains(listed.Body.String(), "Bob") {
+		t.Fatalf("guest list %d %s", listed.Code, listed.Body.String())
+	}
+
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", organizer, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d", end.Code)
+	}
+	if run := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/pipeline/run-fake", organizer, ""); run.Code != http.StatusOK {
+		t.Fatalf("run-fake %d %s", run.Code, run.Body.String())
+	}
+
+	confirmed := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/guest-email-verification/confirm", session.Token,
+		`{"email":"bob@example.com","code":"`+challenge.Code+`"}`)
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirm %d %s", confirmed.Code, confirmed.Body.String())
+	}
+	var payload struct {
+		Token string `json:"access_token"`
+	}
+	if err := json.Unmarshal(confirmed.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", payload.Token, ""); got.Code != http.StatusOK {
+		t.Fatalf("summary %d %s", got.Code, got.Body.String())
+	}
+
+	login := doJSON(t, r, http.MethodPost, "/v1/session/login", organizer, "")
+	logout := doJSON(t, r, http.MethodPost, "/v1/session/logout", organizer, "")
+	if login.Code != http.StatusOK || logout.Code != http.StatusOK {
+		t.Fatalf("session %d %d", login.Code, logout.Code)
+	}
+	events, err := store.ListAudit("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawLogin, sawLogout bool
+	for _, event := range events {
+		if event.Action == "employee_login" {
+			sawLogin = true
+		}
+		if event.Action == "employee_logout" {
+			sawLogout = true
+		}
+	}
+	if !sawLogin || !sawLogout {
+		t.Fatalf("session audits login=%v logout=%v events=%+v", sawLogin, sawLogout, events)
+	}
+}
+
+func TestShareAddReturnsOfflineCodeWithoutSMTP(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	organizer := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, organizer)
+
+	add := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/shared-readers", organizer,
+		`{"email":"reader@example.com"}`)
+	if add.Code != http.StatusOK {
+		t.Fatalf("add %d %s", add.Code, add.Body.String())
+	}
+	var payload struct {
+		Code     string `json:"code"`
+		MagicURL string `json:"magic_url"`
+	}
+	if err := json.Unmarshal(add.Body.Bytes(), &payload); err != nil || len(payload.Code) != 6 {
+		t.Fatalf("offline share code %+v err=%v body=%s", payload, err, add.Body.String())
+	}
+
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", organizer, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d", end.Code)
+	}
+	if run := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/pipeline/run-fake", organizer, ""); run.Code != http.StatusOK {
+		t.Fatalf("run-fake %d", run.Code)
+	}
+	confirm := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/shared-readers/confirm", "",
+		`{"email":"reader@example.com","code":"`+payload.Code+`"}`)
+	if confirm.Code != http.StatusOK {
+		t.Fatalf("confirm %d %s", confirm.Code, confirm.Body.String())
+	}
+}
+
+func TestExportTranscriptAndSummaryWritesAudit(t *testing.T) {
+	r, store, secretEmp, _ := testRouter(t)
+	organizer := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, organizer)
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", organizer, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d", end.Code)
+	}
+	if run := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/pipeline/run-fake", organizer, ""); run.Code != http.StatusOK {
+		t.Fatalf("run-fake %d %s", run.Code, run.Body.String())
+	}
+	got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/artifacts/download", organizer, `{"kind":"export"}`)
+	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"kind":"export"`) || !strings.Contains(got.Body.String(), `"segments"`) {
+		t.Fatalf("export %d %s", got.Code, got.Body.String())
+	}
+	events, err := store.ListAudit(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saw := false
+	for _, event := range events {
+		if event.Action == "artifact_export" {
+			saw = true
+			break
+		}
+	}
+	if !saw {
+		t.Fatalf("expected artifact_export, got %+v", events)
 	}
 }

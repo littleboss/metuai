@@ -1,6 +1,7 @@
 package meeting
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -77,17 +78,14 @@ func RunFakePipeline(repo Repository, meetingID string, idx knowledge.Indexer) (
 	}
 
 	chats, _ := repo.ListChat(meetingID)
-	hasLocalFallback := false
-	for _, a := range arts {
-		if a.Kind == KindLocalMic && a.Status == "ready" {
-			hasLocalFallback = true
-			break
-		}
-	}
-	segments := buildFakeTranscript(meetingID, current.Title, chats, hasLocalFallback)
+	members, _ := repo.ListMembers(meetingID)
+	segments := buildFakeTranscript(meetingID, current.Title, current.OrganizerID, members, chats, arts)
 	if err := repo.ReplaceTranscript(meetingID, segments); err != nil {
 		_ = repo.SetPipelineStage(meetingID, StageRetryableError)
 		return "", err
+	}
+	if stored, err := repo.ListTranscript(meetingID); err == nil {
+		segments = stored
 	}
 	if err := setStage(StageTranscriptReady); err != nil {
 		return "", err
@@ -96,7 +94,7 @@ func RunFakePipeline(repo Repository, meetingID string, idx knowledge.Indexer) (
 	if err := setStage(StageExtractingArtifacts); err != nil {
 		return "", err
 	}
-	summary := buildFakeSummary(meetingID, current.Title, segments, chats)
+	summary := buildFakeSummary(meetingID, current.Title, current.OrganizerID, segments, chats)
 	if err := repo.UpsertSummary(summary); err != nil {
 		_ = repo.SetPipelineStage(meetingID, StageRetryableError)
 		return "", err
@@ -138,79 +136,131 @@ func RunFakePipeline(repo Repository, meetingID string, idx knowledge.Indexer) (
 	return StageReady, nil
 }
 
-func buildFakeTranscript(meetingID, title string, chats []ChatMessage, hasLocalFallback bool) []TranscriptSegment {
-	// 有本机备份时，组织者轨标成 local_fallback，模拟「Egress 缺轨 → 用本机」。
-	organizerSource := "egress"
-	if hasLocalFallback {
-		organizerSource = "local_fallback"
+func buildFakeTranscript(meetingID, title, organizerID string, members []MeetingMember, chats []ChatMessage, arts []MediaArtifact) []TranscriptSegment {
+	fallbacks := localFallbackKeys(arts)
+	hasTrack := false
+	for _, art := range arts {
+		if art.Kind == KindParticipantTrack && art.Status == "ready" {
+			hasTrack = true
+			break
+		}
 	}
+	organizerName := "组织者"
+	for _, member := range members {
+		if member.UserID == organizerID && strings.TrimSpace(member.DisplayNameSnapshot) != "" {
+			organizerName = member.DisplayNameSnapshot
+			break
+		}
+	}
+	speakerID := organizerID
+	if speakerID == "" {
+		speakerID = "organizer"
+	}
+	organizerText := fmt.Sprintf("我们开始讨论「%s」。", title)
 	segments := []TranscriptSegment{
 		{
 			MeetingID:          meetingID,
 			TrackID:            "fake-track-organizer",
-			SpeakerUserID:      "organizer",
-			SpeakerDisplayName: "组织者",
-			Language:           "zh-CN",
+			SpeakerUserID:      speakerID,
+			SpeakerDisplayName: organizerName,
+			Language:           DetectSpokenLanguage(organizerText),
 			StartMs:            0,
 			EndMs:              2500,
-			Text:               fmt.Sprintf("我们开始讨论「%s」。", title),
+			Text:               organizerText,
 			ASRModel:           "fake-asr-poc",
-			Source:             organizerSource,
+			Source:             segmentSourceForSpeaker(speakerID, fallbacks, hasTrack),
 		},
 	}
 	t := 3000
 	for i, chat := range chats {
 		end := t + 2000
+		uid := strings.TrimPrefix(chat.SenderKey, "employee:")
+		uid = strings.TrimPrefix(uid, "guest:")
 		segments = append(segments, TranscriptSegment{
 			MeetingID:          meetingID,
 			TrackID:            fmt.Sprintf("fake-track-chat-%d", i),
-			SpeakerUserID:      chat.SenderKey,
+			SpeakerUserID:      uid,
 			SpeakerDisplayName: chat.DisplayName,
-			Language:           "zh-CN",
+			Language:           DetectSpokenLanguage(chat.Body),
 			StartMs:            t,
 			EndMs:              end,
 			Text:               chat.Body,
 			ASRModel:           "fake-asr-poc",
-			Source:             "egress",
+			Source:             segmentSourceForSpeaker(uid, fallbacks, hasTrack),
 		})
 		t = end + 500
 	}
 	if len(chats) == 0 {
+		secondID, secondName := "participant", "参会人"
+		for _, member := range members {
+			if member.UserID == organizerID {
+				continue
+			}
+			secondID = member.UserID
+			secondName = cmp.Or(strings.TrimSpace(member.DisplayNameSnapshot), member.UserID)
+			break
+		}
+		secondText := "同意先落地会后假流水线，再换真实 ASR。"
 		segments = append(segments, TranscriptSegment{
 			MeetingID:          meetingID,
 			TrackID:            "fake-track-2",
-			SpeakerUserID:      "participant",
-			SpeakerDisplayName: "参会人",
-			Language:           "zh-CN",
+			SpeakerUserID:      secondID,
+			SpeakerDisplayName: secondName,
+			Language:           DetectSpokenLanguage(secondText),
 			StartMs:            3000,
 			EndMs:              5500,
-			Text:               "同意先落地会后假流水线，再换真实 ASR。",
+			Text:               secondText,
 			ASRModel:           "fake-asr-poc",
-			Source:             "egress",
+			Source:             segmentSourceForSpeaker(secondID, fallbacks, hasTrack),
 		})
 	}
-	return segments
+	return BindTranscriptSpeakers(members, organizerID, segments)
 }
 
-func buildFakeSummary(meetingID, title string, segments []TranscriptSegment, chats []ChatMessage) MeetingSummary {
-	var quoted []string
+func buildFakeSummary(meetingID, title, organizerID string, segments []TranscriptSegment, chats []ChatMessage) MeetingSummary {
+	quoted := make([]string, 0, len(segments))
+	segIDs := make([]string, 0, len(segments))
 	for _, s := range segments {
 		quoted = append(quoted, s.Text)
+		if s.ID != "" {
+			segIDs = append(segIDs, s.ID)
+		}
 	}
 	body := strings.Join(quoted, " ")
 	if len(body) > 240 {
 		body = body[:240] + "…"
 	}
-	actions := []string{"跟进会后假流水线切换为真实 ASR"}
+	msgIDs := make([]string, 0, len(chats))
+	for _, chat := range chats {
+		if chat.ID != "" {
+			msgIDs = append(msgIDs, chat.ID)
+		}
+	}
+	actions := []ActionItem{{
+		Task:             "跟进会后假流水线切换为真实 ASR",
+		OwnerUserID:      organizerID,
+		SourceSegmentIDs: segIDs,
+	}}
 	if len(chats) > 0 {
-		actions = append(actions, "整理会中落库聊天中的待办")
+		actions = append(actions, ActionItem{
+			Task:             "整理会中落库聊天中的待办",
+			OwnerUserID:      organizerID,
+			SourceMessageIDs: msgIDs,
+		})
 	}
 	return MeetingSummary{
-		MeetingID:     meetingID,
-		Summary:       fmt.Sprintf("【假纪要】会议「%s」已结束。内容摘要：%s", title, body),
-		Decisions:     []string{"采用会后处理而非实时 AI 助手", "转写权威音源为 Egress 独立音轨（待接线）"},
-		ActionItems:   actions,
-		Risks:         []string{"当前转写为假数据，不可用于生产决策"},
-		OpenQuestions: []string{"何时切换 FunASR / WhisperX 评测？"},
+		MeetingID: meetingID,
+		Summary:   fmt.Sprintf("【假纪要】会议「%s」已结束。内容摘要：%s", title, body),
+		Decisions: []CitedItem{
+			{Text: "采用会后处理而非实时 AI 助手", SourceSegmentIDs: segIDs},
+			{Text: "转写权威音源为 Egress 独立音轨", SourceSegmentIDs: segIDs},
+		},
+		ActionItems: actions,
+		Risks: []CitedItem{
+			{Text: "当前转写为假数据，不可用于生产决策", SourceSegmentIDs: segIDs},
+		},
+		OpenQuestions: []CitedItem{
+			{Text: "何时切换 FunASR / WhisperX 评测？", SourceSegmentIDs: segIDs},
+		},
 	}
 }

@@ -165,11 +165,12 @@ func RegisterRoutes(r *gin.Engine, store *Store, meetings meeting.Repository, em
 		}
 
 		art, artErr := meetings.AddMediaArtifact(meeting.MediaArtifact{
-			MeetingID: meetingID,
-			Kind:      meeting.KindLocalMic,
-			Status:    status,
-			ObjectKey: qualified,
-			Detail:    detail,
+			MeetingID:      meetingID,
+			Kind:           meeting.KindLocalMic,
+			Status:         status,
+			ObjectKey:      qualified,
+			Detail:         detail,
+			ParticipantKey: actor,
 		})
 		if artErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": artErr.Error()})
