@@ -1,0 +1,24 @@
+# LiveKit 开发配置。
+#
+# 为什么不用 `--dev`：dev 模式不配置 Redis，而 livekit-server 与 livekit/egress
+# 之间正是通过 Redis 派发录制任务的。没有 Redis，StartEgress 会一直超时。
+# 端口与密钥刻意保持和 dev 模式一致，宿主机侧的 17880/17881/17882 映射不变。
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+
+rtc:
+  tcp_port: 7881
+  # 给容器内 Chrome（RoomComposite）更多 UDP 端口；单端口在 Docker Desktop 上常连不上。
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: false
+
+redis:
+  address: redis:6379
+
+keys:
+  devkey: secret
+
+logging:
+  level: info

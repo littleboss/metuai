@@ -1,0 +1,36 @@
+# Vespa application package (PoC schema)
+# Deploy with: vespa deploy infra/vespa  (when cluster available)
+# Gateway: set VESPA_URL=http://127.0.0.1:8080 — Upsert dual-writes; ACL still filtered in-process until YQL is wired.
+
+schema doc {
+    document doc {
+        field meeting_id type string {
+            indexing: summary | attribute
+        }
+        field title type string {
+            indexing: summary | index
+        }
+        field text type string {
+            indexing: summary | index
+        }
+        field source_type type string {
+            indexing: summary | attribute
+        }
+        field source_id type string {
+            indexing: summary | attribute
+        }
+        field allowed_user_ids type array<string> {
+            indexing: attribute
+        }
+        field allowed_guest_emails type array<string> {
+            indexing: attribute
+        }
+        field timestamp type long {
+            indexing: attribute
+        }
+    }
+
+    fieldset default {
+        fields: title, text
+    }
+}

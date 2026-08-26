@@ -5,7 +5,6 @@ services:
       POSTGRES_USER: metuai
       POSTGRES_PASSWORD: metuai
       POSTGRES_DB: metuai
-    # Host 55432 avoids clashing with common local Postgres on 5432.
     ports:
       - "55432:5432"
     healthcheck:
@@ -14,11 +13,87 @@ services:
       timeout: 3s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # 用配置文件而非 --dev：egress 依赖 SFU 侧 Redis 派发任务，dev 模式不配 Redis。
+  # 密钥与端口沿用 dev 默认值（devkey/secret、7880/7881/7882）。
   livekit:
     image: livekit/livekit-server:v1.8.4
-    command: --dev --bind 0.0.0.0
-    # Host 17880 avoids clashing with other LiveKit/dev servers on 7880.
+    command: --config /etc/livekit/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "17880:7880"
       - "17881:7881"
       - "17882:7882/udp"
+      # WebRTC ICE 端口（宿主机浏览器 + 容器内 egress Chrome）
+      - "50000-50100:50000-50100/udp"
+
+  # 房间合成录制会在容器内跑 Chrome，需要较大的 /dev/shm 和 SYS_ADMIN。
+  # S3 凭证不写在这里：网关在每次 StartEgress 请求里下发，便于按会议切换存储。
+  livekit-egress:
+    image: livekit/egress:v1.8.4
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+      minio:
+        condition: service_started
+    environment:
+      EGRESS_CONFIG_BODY: |
+        log_level: info
+        api_key: devkey
+        api_secret: secret
+        ws_url: ws://livekit:7880
+        redis:
+          address: redis:6379
+        insecure: true
+        cpu_cost:
+          room_composite_cpu_cost: 3
+          track_composite_cpu_cost: 2
+          track_cpu_cost: 1
+    shm_size: 1gb
+    cap_add:
+      - SYS_ADMIN
+    # GPU 可选；CPU 环境允许队列延迟（架构已假定）。
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: metuai
+      MINIO_ROOT_PASSWORD: metuai-secret
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 3;
+      mc alias set local http://minio:9000 metuai metuai-secret;
+      mc mb -p local/metuai-media || true;
+      exit 0;
+      "
