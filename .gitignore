@@ -1,1 +1,12 @@
 .worktrees/
+node_modules/
+dist/
+*.local.md
+services/gateway/vendor/
+apps/desktop/src-tauri/target/
+services/worker/.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+/tmp/
