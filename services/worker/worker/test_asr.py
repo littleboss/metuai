@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from worker.asr import resolve_backend, transcribe_audio, transcribe_stub
-from worker.main import _pick_media_source
+from worker.asr import detect_spoken_language, resolve_backend, transcribe_audio, transcribe_stub
+from worker.main import _iter_audio_sources, _speaker_fields
 
 
 class ASRTest(unittest.TestCase):
@@ -24,18 +24,52 @@ class ASRTest(unittest.TestCase):
             self.assertEqual(used, "stub")
             self.assertGreaterEqual(len(out), 1)
 
-    def test_authoritative_track_precedes_local_fallback_and_room_mix(self):
+    def test_iter_sources_covers_each_participant_and_skips_room_mix(self):
         artifacts = [
             {"kind": "room_audio", "status": "ready", "object_key": "room.ogg"},
-            {"kind": "local_mic", "status": "ready", "object_key": "local.pcm"},
-            {"kind": "participant_track", "status": "ready", "object_key": "track.ogg"},
+            {
+                "kind": "local_mic",
+                "status": "ready",
+                "object_key": "local-u1.pcm",
+                "participant_key": "employee:u-1",
+            },
+            {
+                "kind": "participant_track",
+                "status": "ready",
+                "object_key": "track-u2.ogg",
+                "participant_key": "employee:u-2",
+            },
+            {
+                "kind": "local_mic",
+                "status": "ready",
+                "object_key": "local-u2.pcm",
+                "participant_key": "employee:u-2",
+            },
         ]
-        self.assertEqual(_pick_media_source(artifacts), ("participant_track", "track.ogg"))
+        sources = _iter_audio_sources(artifacts)
+        keys = {(s["kind"], s["participant_key"]) for s in sources}
+        self.assertIn(("participant_track", "employee:u-2"), keys)
+        self.assertIn(("local_mic", "employee:u-1"), keys)
+        self.assertNotIn(("local_mic", "employee:u-2"), keys)
+        self.assertTrue(all(s["kind"] != "room_audio" for s in sources))
+
+    def test_room_mix_alone_is_not_a_source(self):
         self.assertEqual(
-            _pick_media_source(artifacts[:2]),
-            ("local_mic", "local.pcm"),
+            _iter_audio_sources([{"kind": "room_audio", "status": "ready", "object_key": "room.ogg"}]),
+            [],
         )
-        self.assertEqual(_pick_media_source(artifacts[:1]), ("", ""))
+
+    def test_speaker_fields_from_participant_key(self):
+        self.assertEqual(_speaker_fields("employee:u-1"), ("u-1", "u-1"))
+        self.assertEqual(_speaker_fields(""), ("speaker", "说话人"))
+
+    def test_detect_spoken_language_heuristic(self):
+        self.assertEqual(detect_spoken_language("我们开始讨论明年预算。"), "zh-CN")
+        self.assertEqual(detect_spoken_language("我哋而家喺会议室倾下预算嘅事。"), "yue")
+        self.assertEqual(
+            detect_spoken_language("Let's start with the budget review tomorrow."),
+            "en",
+        )
 
 
 if __name__ == "__main__":

@@ -15,6 +15,30 @@ from typing import Any
 
 log = logging.getLogger("metuai.asr")
 
+# 粤语书面里较常见、普通话正文较少连用的字。命中若干个才标 yue。
+_CANTONESE_CUES = set("嘅唔佢喺咗係冇啲咁喎嚟哋嗰㗎噉")
+
+
+def detect_spoken_language(text: str) -> str:
+    """PoC 启发式，不是 FunASR 语言识别。返回 zh-CN / yue / en。"""
+    han = yue = latin = 0
+    for ch in text or "":
+        if "\u4e00" <= ch <= "\u9fff":
+            han += 1
+            if ch in _CANTONESE_CUES:
+                yue += 1
+        elif "A" <= ch <= "Z" or "a" <= ch <= "z":
+            latin += 1
+    if yue >= 2 or (han >= 4 and yue > 0 and yue * 100 // han >= 8):
+        return "yue"
+    if latin >= 8 and latin > han * 2:
+        return "en"
+    if han > 0:
+        return "zh-CN"
+    if latin > 0:
+        return "en"
+    return "zh-CN"
+
 
 @dataclass
 class Segment:
@@ -67,15 +91,17 @@ def transcribe_stub(
     half = max(500, dur // 2)
     title = meeting_title or "本场会议"
     log.warning("ASR backend=stub (not FunASR); path=%s duration_ms≈%s", audio_path, dur)
+    first = f"【stub ASR】关于「{title}」的讨论开始。"
+    second = "【stub ASR】请切换 ASR_BACKEND=funasr 并安装 funasr 以启用真实转写。"
     return [
         Segment(
             track_id="stub-1",
             speaker_user_id="speaker-1",
             speaker_display_name="说话人1",
-            language="zh-CN",
+            language=detect_spoken_language(first),
             start_ms=0,
             end_ms=half,
-            text=f"【stub ASR】关于「{title}」的讨论开始。",
+            text=first,
             asr_model="stub-asr",
             source=source,
             confidence=None,
@@ -84,10 +110,10 @@ def transcribe_stub(
             track_id="stub-2",
             speaker_user_id="speaker-2",
             speaker_display_name="说话人2",
-            language="zh-CN",
+            language=detect_spoken_language(second),
             start_ms=half,
             end_ms=dur,
-            text="【stub ASR】请切换 ASR_BACKEND=funasr 并安装 funasr 以启用真实转写。",
+            text=second,
             asr_model="stub-asr",
             source=source,
             confidence=None,
@@ -134,7 +160,7 @@ def transcribe_funasr(audio_path: Path, *, source: str = "egress") -> list[Segme
                 track_id=f"funasr-{i}",
                 speaker_user_id="speaker",
                 speaker_display_name="说话人",
-                language="zh-CN",
+                language=detect_spoken_language(text),
                 start_ms=cursor,
                 end_ms=end,
                 text=text.strip() or "（空）",

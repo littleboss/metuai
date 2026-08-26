@@ -8,6 +8,9 @@
     # 假流水线（整条到 READY）
     python -m worker.main --mode fake --meeting mtg_xxx --once
 
+    # 从任务表领取一条（会议结束后网关会入队）
+    python -m worker.main --claim --once
+
     # ASR stub（不装 funasr；写到 TRANSCRIPT_READY）
     python -m worker.main --mode asr --meeting mtg_xxx --once
 
@@ -76,14 +79,76 @@ def run_fake_for_meeting(gateway: str, token: str, meeting_id: str) -> int:
     return 0 if status == 200 else 1
 
 
-def _pick_media_source(artifacts: list[dict]) -> tuple[str, str]:
-    """优先 Egress 独立音轨，仅在缺轨时使用员工本机备份。"""
-    by_kind = {a.get("kind"): a for a in artifacts if a.get("status") == "ready"}
-    for kind in ("participant_track", "local_mic"):
-        art = by_kind.get(kind)
-        if art and art.get("object_key"):
-            return kind, art["object_key"]
-    return "", ""
+def claim_and_run(
+    gateway: str,
+    token: str,
+    owner: str,
+    mode: str,
+    audio: str | None,
+    backend: str | None,
+) -> int:
+    """领取一条会后任务：成功则 complete，失败则 fail（超限由网关标死信）。"""
+    status, payload = _request(
+        "POST",
+        f"{gateway}/v1/pipeline/tasks/claim",
+        token,
+        {"owner": owner, "limit": 1, "kind": mode},
+    )
+    if status != 200:
+        print(f"claim http={status} body={payload}", file=sys.stderr)
+        return 1
+    tasks = payload.get("tasks") or []
+    if not tasks:
+        print("claim: no tasks")
+        return 0
+    task = tasks[0]
+    task_id = task.get("id") or ""
+    meeting_id = task.get("meeting_id") or ""
+    kind = task.get("kind") or mode
+    print(f"claimed id={task_id} meeting={meeting_id} kind={kind}")
+    try:
+        if kind == "asr":
+            rc = run_asr_for_meeting(gateway, token, meeting_id, audio=audio, backend=backend)
+        else:
+            rc = run_fake_for_meeting(gateway, token, meeting_id)
+    except Exception as exc:  # pragma: no cover - 保护租约不被卡死
+        log.exception("task %s crashed", task_id)
+        _request("POST", f"{gateway}/v1/pipeline/tasks/{task_id}/fail", token, {"error": str(exc)})
+        return 1
+    if rc == 0:
+        done_status, done_body = _request("POST", f"{gateway}/v1/pipeline/tasks/{task_id}/complete", token)
+        print(f"complete http={done_status} body={done_body}")
+        return 0 if done_status == 200 else 1
+    fail_status, fail_body = _request(
+        "POST",
+        f"{gateway}/v1/pipeline/tasks/{task_id}/fail",
+        token,
+        {"error": f"worker exit {rc}"},
+    )
+    print(f"fail http={fail_status} body={fail_body}")
+    return rc
+
+
+def _iter_audio_sources(artifacts: list[dict]) -> list[dict]:
+    """逐参会人选择权威音源：独立音轨优先，缺轨再用该人的本机备份。房间混音永不入选。"""
+    ready = [a for a in artifacts if a.get("status") == "ready" and a.get("object_key")]
+    tracks = [a for a in ready if a.get("kind") == "participant_track"]
+    local = [a for a in ready if a.get("kind") == "local_mic"]
+    covered: set[str] = set()
+    out: list[dict] = []
+    for art in tracks:
+        key = (art.get("participant_key") or art.get("object_key") or "").strip()
+        out.append({"kind": "participant_track", "object_key": art["object_key"], "participant_key": art.get("participant_key") or ""})
+        if key:
+            covered.add(key)
+    for art in local:
+        key = (art.get("participant_key") or "").strip()
+        if key and key in covered:
+            continue
+        out.append({"kind": "local_mic", "object_key": art["object_key"], "participant_key": key})
+        if key:
+            covered.add(key)
+    return out
 
 
 def _try_fetch_minio(object_key: str, dest: Path) -> bool:
@@ -118,6 +183,27 @@ def _try_fetch_minio(object_key: str, dest: Path) -> bool:
         return False
 
 
+def _speaker_fields(participant_key: str) -> tuple[str, str]:
+    key = (participant_key or "").strip()
+    if key.startswith("employee:") or key.startswith("guest:"):
+        uid = key.split(":", 1)[1]
+        return uid, uid
+    if key:
+        return key, key
+    return "speaker", "说话人"
+
+
+def mark_manual_review(gateway: str, token: str, meeting_id: str, reason: str) -> int:
+    status, payload = _request(
+        "POST",
+        f"{gateway}/v1/meetings/{meeting_id}/pipeline/manual-review",
+        token,
+        {"reason": reason},
+    )
+    print(f"manual-review meeting={meeting_id} http={status} body={payload}")
+    return 0 if status == 200 else 1
+
+
 def run_asr_for_meeting(
     gateway: str,
     token: str,
@@ -137,40 +223,71 @@ def run_asr_for_meeting(
 
     status, media = _request("GET", f"{gateway}/v1/meetings/{meeting_id}/media", token)
     artifacts = media.get("artifacts") or [] if status == 200 else []
-    kind, object_key = _pick_media_source(artifacts)
-    source = "local_fallback" if kind == "local_mic" else "egress"
+    sources = _iter_audio_sources(artifacts)
 
-    if audio is None and not object_key:
-        print("authoritative_audio_not_ready: participant track missing and no local fallback", file=sys.stderr)
-        return 1
+    if audio is None and not sources:
+        return mark_manual_review(
+            gateway,
+            token,
+            meeting_id,
+            "no participant_track or local_mic; room mix is not an ASR source",
+        )
 
-    audio_path: Path | None = Path(audio) if audio else None
+    collected: list[Segment] = []
+    used = "stub"
     tmp: tempfile.TemporaryDirectory[str] | None = None
-    if audio_path is None and object_key:
-        tmp = tempfile.TemporaryDirectory(prefix="metuai-asr-")
-        dest = Path(tmp.name) / "audio.bin"
-        if _try_fetch_minio(object_key, dest):
-            audio_path = dest
-        else:
-            log.warning("no local audio; stub will run without file (object_key=%s)", object_key)
+
+    def transcribe_one(source: str, participant_key: str, audio_path: Path | None) -> int:
+        nonlocal used, collected
+        try:
+            used, segments = transcribe_audio(
+                audio_path,
+                backend=backend,
+                source=source,
+                meeting_title=title,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"asr failed: {exc}", file=sys.stderr)
+            return 1
+        uid, display = _speaker_fields(participant_key)
+        for i, seg in enumerate(segments):
+            if participant_key:
+                seg.speaker_user_id = uid
+                if not seg.speaker_display_name or seg.speaker_display_name.startswith("说话人"):
+                    seg.speaker_display_name = display
+                if not seg.track_id or seg.track_id.startswith(("stub-", "funasr-")):
+                    seg.track_id = f"{participant_key}-{i}"
+            collected.append(seg)
+        return 0
 
     try:
-        used, segments = transcribe_audio(
-            audio_path,
-            backend=backend,
-            source=source if source else "egress",
-            meeting_title=title,
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"asr failed: {exc}", file=sys.stderr)
-        return 1
+        if audio:
+            if transcribe_one("egress", "", Path(audio)) != 0:
+                return 1
+        else:
+            for src in sources:
+                source = "local_fallback" if src["kind"] == "local_mic" else "egress"
+                audio_path: Path | None = None
+                if tmp is None:
+                    tmp = tempfile.TemporaryDirectory(prefix="metuai-asr-")
+                dest = Path(tmp.name) / f"{src.get('participant_key') or src['kind']}-{len(collected)}.bin"
+                dest = Path(str(dest).replace(":", "_"))
+                if _try_fetch_minio(src["object_key"], dest):
+                    audio_path = dest
+                else:
+                    log.warning("no local audio; stub will run without file (object_key=%s)", src["object_key"])
+                if transcribe_one(source, src.get("participant_key") or "", audio_path) != 0:
+                    return 1
     finally:
         if tmp is not None:
             tmp.cleanup()
 
+    if not collected:
+        return mark_manual_review(gateway, token, meeting_id, "asr produced no segments")
+
     body = {
         "backend": used,
-        "segments": [s.to_api() if isinstance(s, Segment) else s for s in segments],
+        "segments": [s.to_api() if isinstance(s, Segment) else s for s in collected],
     }
     status, payload = _request(
         "POST",
@@ -178,7 +295,7 @@ def run_asr_for_meeting(
         token,
         body,
     )
-    print(f"asr meeting={meeting_id} backend={used} http={status} body={payload}")
+    print(f"asr meeting={meeting_id} backend={used} segments={len(collected)} http={status} body={payload}")
     return 0 if status == 200 else 1
 
 
@@ -186,22 +303,36 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Metuai post-meeting worker")
     parser.add_argument("--gateway", default=os.getenv("GATEWAY_URL", "http://127.0.0.1:18080"))
-    parser.add_argument("--token", default=os.getenv("EMPLOYEE_JWT", ""))
+    parser.add_argument(
+        "--token",
+        default=os.getenv("WORKER_TOKEN") or os.getenv("EMPLOYEE_JWT", ""),
+    )
     parser.add_argument("--meeting", default=os.getenv("MEETING_ID", ""))
     parser.add_argument("--mode", choices=("fake", "asr"), default=os.getenv("WORKER_MODE", "fake"))
     parser.add_argument("--audio", default=os.getenv("ASR_AUDIO", ""), help="本地音频路径（asr 模式）")
     parser.add_argument("--backend", default=os.getenv("ASR_BACKEND", ""), help="stub|funasr")
     parser.add_argument("--once", action="store_true", help="处理一场会后退出（PoC 默认行为）")
+    parser.add_argument("--claim", action="store_true", help="从网关任务表领取一条作业（可与 --once 同用）")
+    parser.add_argument("--owner", default=os.getenv("WORKER_OWNER", "worker"), help="租约持有者名")
     args = parser.parse_args(argv)
 
     if not args.token:
-        print("EMPLOYEE_JWT / --token required", file=sys.stderr)
+        print("WORKER_TOKEN / EMPLOYEE_JWT / --token required", file=sys.stderr)
         return 2
+    gateway = args.gateway.rstrip("/")
+    if args.claim:
+        return claim_and_run(
+            gateway,
+            args.token,
+            owner=args.owner,
+            mode=args.mode,
+            audio=args.audio or None,
+            backend=args.backend or None,
+        )
     if not args.meeting:
-        print("MEETING_ID / --meeting required", file=sys.stderr)
+        print("MEETING_ID / --meeting required (or pass --claim)", file=sys.stderr)
         return 2
 
-    gateway = args.gateway.rstrip("/")
     if args.mode == "fake":
         return run_fake_for_meeting(gateway, args.token, args.meeting)
     return run_asr_for_meeting(
