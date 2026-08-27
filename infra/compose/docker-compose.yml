@@ -143,6 +143,12 @@ services:
       SMTP_REQUIRE_TLS: ${SMTP_REQUIRE_TLS:-true}
       METUAI_SPOOL_KEY: ${METUAI_SPOOL_KEY:-}
       VESPA_URL: ${VESPA_URL:-}
+      # Optional private ASR/LLM; unset = 503 fail-closed; do not point at public cloud ASR/LLM; no extra compose service.
+      ASR_BASE_URL: ${ASR_BASE_URL:-}
+      ASR_API_KEY: ${ASR_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

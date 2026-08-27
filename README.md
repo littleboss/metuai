@@ -24,6 +24,8 @@ docker compose -f infra/compose/docker-compose.yml up --build
 打开 `http://127.0.0.1:5173`：注册/登录 → 会议列表 → 大厅 → 入会门 → 会场 → 纪要。
 嘉宾仍用链接+密码。
 
+ASR/LLM 为可选的宿主机私有端点，经 compose 传入 `api`；本栈不附带 ASR GPU worker。
+
 ### JWT 密钥（运行时注入，镜像不含默认值）
 
 `EMPLOYEE_JWT_SECRET` 与 `GUEST_JWT_SECRET` **不会**写进 Dockerfile `ARG`/`ENV`，
