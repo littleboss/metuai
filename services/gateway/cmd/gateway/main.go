@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"metuai/services/gateway/internal/auth"
 	"metuai/services/gateway/internal/config"
 	"metuai/services/gateway/internal/egress"
 	"metuai/services/gateway/internal/identity"
@@ -24,14 +25,23 @@ func main() {
 	cfg := config.FromEnv()
 
 	var repo meeting.Repository
+	var users auth.UserStore
 	if cfg.DatabaseURL != "" {
 		pgStore, err := meeting.NewPGStore(context.Background(), cfg.DatabaseURL)
 		if err != nil {
 			log.Fatal(err)
 		}
 		repo = pgStore
+		userStore, err := auth.NewPGStoreFromPool(context.Background(), pgStore.Pool())
+		if err != nil {
+			log.Fatal(err)
+		}
+		users = userStore
+		log.Printf("auth user store: postgres")
 	} else {
 		repo = meeting.NewMemoryStore()
+		users = auth.NewMemoryStore()
+		log.Printf("auth user store: memory")
 	}
 
 	uploadRoot := os.Getenv("UPLOAD_SPOOL_DIR")
@@ -143,6 +153,7 @@ func main() {
 		readiness.Ping = pg.Ping
 	}
 	r.GET("/readyz", ready.HandleReadyz(readiness))
+	auth.RegisterRoutes(r, users, cfg.EmployeeJWTSecret)
 	var mediaSigner meeting.MediaURLSigner
 	if blobs != nil && blobs.Enabled() {
 		mediaSigner = blobs

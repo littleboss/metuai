@@ -61,6 +61,34 @@ function authHeaders(token: string, json = false): HeadersInit {
   return headers
 }
 
+export type AuthTokens = {
+  access_token: string
+}
+
+export async function registerAccount(
+  email: string,
+  password: string,
+  name?: string,
+): Promise<AuthTokens> {
+  const response = await fetch('/v1/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...metuaiClientHeaders() },
+    body: JSON.stringify({ email, password, name: name || undefined }),
+  })
+  await assertOk(response)
+  return response.json() as Promise<AuthTokens>
+}
+
+export async function loginAccount(email: string, password: string): Promise<AuthTokens> {
+  const response = await fetch('/v1/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...metuaiClientHeaders() },
+    body: JSON.stringify({ email, password }),
+  })
+  await assertOk(response)
+  return response.json() as Promise<AuthTokens>
+}
+
 export async function createMeeting(
   employeeToken: string,
   title: string,

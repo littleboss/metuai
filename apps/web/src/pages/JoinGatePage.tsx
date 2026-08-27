@@ -27,7 +27,14 @@ export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
   const [err, setErr] = useState<{ error?: string; message?: string }>({})
 
   if (mode === 'employee' && !employeeToken.trim()) {
-    return <AuthPage />
+    return (
+      <AuthPage
+        onAuthenticated={(tok) => {
+          sessionStorage.setItem('employeeToken', tok)
+          window.location.reload()
+        }}
+      />
+    )
   }
 
   async function handleSubmit(event: FormEvent) {

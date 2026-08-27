@@ -14,7 +14,7 @@ function usePath() {
 
 function App() {
   const path = usePath()
-  // 会话令牌由未来 register/login 写入；本 PR 不实现登录。
+  // 会话令牌由 /v1/auth/login|register 写入 sessionStorage。
   const [employeeToken, setEmployeeToken] = useState(
     () => sessionStorage.getItem('employeeToken') ?? '',
   )
@@ -75,7 +75,13 @@ function App() {
   if (lobbyMatch) {
     const meetingId = decodeURIComponent(lobbyMatch[1])
     if (!employeeToken) {
-      return <AuthPage />
+      return (
+        <AuthPage
+          onAuthenticated={(tok) => {
+            setEmployeeToken(tok)
+          }}
+        />
+      )
     }
     return (
       <LobbyPage
@@ -87,7 +93,13 @@ function App() {
   }
 
   if (!employeeToken) {
-    return <AuthPage />
+    return (
+      <AuthPage
+        onAuthenticated={(tok) => {
+          setEmployeeToken(tok)
+        }}
+      />
+    )
   }
 
   return (

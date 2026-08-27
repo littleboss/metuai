@@ -1,24 +1,120 @@
+import { type FormEvent, useState } from 'react'
 import { AppShell } from '../aura/AppShell'
+import { Banner } from '../aura/Banner'
+import { parseApiError } from '../aura/parseApiError'
+import { Button } from '../aura/Button'
+import { SecretField, TextField } from '../aura/TextField'
+import { loginAccount, registerAccount } from '../lib/api'
 
 type AuthPageProps = {
-  /** 占位：Nexus 发布 register/login 契约前不签发会话。 */
-  onAuthenticated?: (token: string) => void
+  onAuthenticated: (token: string) => void
 }
 
-/**
- * Auth 占位页。产品将提供 register+login（登录签发 JWT）；
- * 契约由 Nexus 发布后再接。本页不做企业 JWT 粘贴，也不实现注册/登录。
- */
-export function AuthPage(_props: AuthPageProps) {
+type Mode = 'login' | 'register'
+
+/** Aura 登录/注册：邮箱+密码；成功后保存 access_token 并进入会议列表。无 JWT 粘贴。 */
+export function AuthPage({ onAuthenticated }: AuthPageProps) {
+  const [mode, setMode] = useState<Mode>('login')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState<{ error?: string; message?: string }>({})
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault()
+    setLoading(true)
+    setErr({})
+    try {
+      const tokens =
+        mode === 'register'
+          ? await registerAccount(email.trim(), password, name.trim() || undefined)
+          : await loginAccount(email.trim(), password)
+      sessionStorage.setItem('employeeToken', tokens.access_token)
+      onAuthenticated(tokens.access_token)
+    } catch (error) {
+      setErr(parseApiError(error))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <AppShell title="METUAI">
       <div className="mx-auto flex w-full max-w-md flex-col gap-2">
-        <h1 className="text-lg font-semibold tracking-tight">登录 / 注册</h1>
+        <div className="space-y-2">
+          <h1 className="text-lg font-semibold tracking-tight">
+            {mode === 'login' ? '登录' : '注册'}
+          </h1>
+          <p className="text-sm text-secondary">
+            使用邮箱与密码{mode === 'login' ? '登录' : '创建账号'}。登录成功后由服务端签发会话令牌。
+          </p>
+        </div>
+
+        <Banner error={err.error} message={err.message} />
+
+        <form className="flex flex-col gap-2" onSubmit={(e) => void handleSubmit(e)}>
+          {mode === 'register' ? (
+            <TextField
+              label="显示名称"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoComplete="name"
+              placeholder="可选"
+            />
+          ) : null}
+          <TextField
+            label="邮箱"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            autoComplete="email"
+          />
+          <SecretField
+            label="密码"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            minLength={8}
+            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            hint="至少 8 个字符"
+          />
+          <Button type="submit" loading={loading} className="w-full">
+            {mode === 'login' ? '登录' : '注册'}
+          </Button>
+        </form>
+
         <p className="text-sm text-secondary">
-          身份入口待 Nexus 发布 register/login API 契约后接入。登录成功后将由服务端签发 JWT。
-        </p>
-        <p className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-secondary">
-          AuthPage stub — 本 PR 不实现注册或登录。
+          {mode === 'login' ? (
+            <>
+              还没有账号？{' '}
+              <button
+                type="button"
+                className="text-accent hover:text-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-lg"
+                onClick={() => {
+                  setMode('register')
+                  setErr({})
+                }}
+              >
+                注册
+              </button>
+            </>
+          ) : (
+            <>
+              已有账号？{' '}
+              <button
+                type="button"
+                className="text-accent hover:text-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-lg"
+                onClick={() => {
+                  setMode('login')
+                  setErr({})
+                }}
+              >
+                登录
+              </button>
+            </>
+          )}
         </p>
       </div>
     </AppShell>

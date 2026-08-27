@@ -17,6 +17,11 @@ type PGStore struct {
 	pool *pgxpool.Pool
 }
 
+// Pool 供同库模块（如 auth.users）复用连接池。
+func (s *PGStore) Pool() *pgxpool.Pool {
+	return s.pool
+}
+
 func NewPGStore(ctx context.Context, dsn string) (*PGStore, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {

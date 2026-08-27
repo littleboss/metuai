@@ -27,7 +27,8 @@
 | 即时建会、自动密码、录音确认、LiveKit 入会 | **已实现（代码级）** | 网关、Web UI 和令牌测试已覆盖；房间密码已改为 bcrypt，兼容旧 SHA-256 记录。 |
 | `/readyz` 与签发失败关闭 | **已实现（代码级）** | `EMPLOYEE_JWT_SECRET` / `GUEST_JWT_SECRET` **无代码默认值**；未设置或 DB 不可达时 503 + `missing[]`。未就绪时 create / guest-session / livekit-token 不签发。`/healthz` 仍为存活探针。 |
 | 纪要不发明内容 | **已实现（P0 交付）** | 无转写 → `422 no_transcript`；未配 `PRIVATE_LLM_URL` → `503 AI_NOT_CONFIGURED`；不出站公网 LLM。有转写且私有 LLM 配置后 GET summary 要求非空 `summary` 与 `action_items[].task`。 |
-| Aura Web 壳 | **部分实现** | 非鉴权页已 Aura 化：JoinGate / Lobby / MeetingStage / Notes / 401·403·503。`AuthPage` 为 stub，等待 Nexus register/login 契约；本轮不实现注册登录。 |
+| Aura Web 壳 | **已实现（代码级）** | Auth（邮箱+密码 register/login）→ List → Lobby → JoinGate → MeetingStage → Notes + 401/403/503。无 JWT 粘贴。 |
+| 本地 register/login | **已实现（代码级）** | `POST /v1/auth/register`（201）与 `/v1/auth/login`（200）签发员工 JWT；用户表 bcrypt；空 `EMPLOYEE_JWT_SECRET` → 503。 |
 | 员工必须使用 Tauri，浏览器不能开会 | **部分实现** | 有 Tauri 壳和服务端拦截，但当前只检查可伪造的 `X-Metuai-Client`，且开发默认允许 Web；没有设备注册/证明与稳定深链闭环。 |
 | 进会前自动开始员工本机麦克风备份 | **已实现（流程接线）** | Tauri 在页面进入房间前启动录音，启动失败会阻止进会；普通浏览器和嘉宾不启用。真设备权限仍需手工验证。 |
 | 分块、checksum、加密 spool、断点续传 | **部分实现** | Rust/网关均有测试，队列会落盘；桌面端启动或进会且录音为空闲时会尝试自动续传待传队列，失败时仍可手动点恢复。设备注销、吊销和密钥轮换未做。 |

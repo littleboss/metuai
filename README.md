@@ -89,9 +89,9 @@ go run ./cmd/gateway
 
 `EMPLOYEE_JWT_SECRET` / `GUEST_JWT_SECRET` **没有代码内默认值**。未设置时 `GET /readyz` 返回 503，建会/嘉宾会话/LiveKit 令牌失败关闭。本地请先 `source infra/compose/.env.example`。
 
-员工 **register / login**（登录签发 JWT）契约由 Nexus 发布后再接；当前 Web `AuthPage` 仅为占位。
+员工 **register / login** 走 `POST /v1/auth/register` 与 `POST /v1/auth/login`，返回 `{access_token}`（员工 JWT）。Web `AuthPage` 为邮箱+密码，不再粘贴 JWT。
 
-### 3. 开发令牌（仅网关联调，非产品登录）
+### 3. 可选：开发令牌（联调辅助，非产品登录路径）
 
 ```bash
 set -a && source infra/compose/.env.example && set +a
@@ -109,7 +109,7 @@ pnpm install
 pnpm dev
 ```
 
-打开 `http://127.0.0.1:5173`。Aura 非鉴权流程：嘉宾入会门 → 会场网格；会后纪要页；错误页 401/403/503。员工列表/大厅在登录契约落地后可用。
+打开 `http://127.0.0.1:5173`：注册/登录 → 会议列表 → 大厅 → 入会门 → 会场 → 纪要。嘉宾仍用链接+密码。
 
 未确认录音时，`/v1/meetings/:id/livekit-token` 返回 `403` 且 `error=recording_ack_required`。  
 将 `DEV_ALLOW_EMPLOYEE_WEB=false` 后，员工浏览器入会会被拒绝（需 `X-Metuai-Client: tauri`）。
