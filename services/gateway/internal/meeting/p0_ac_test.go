@@ -63,6 +63,7 @@ func TestAC2_ReadyzRequiresSecretAndDatabase(t *testing.T) {
 }
 
 // AC9: 未设置 JWT 密钥时 /readyz=503（missing 含 EMPLOYEE_JWT_SECRET），入会 API 失败关闭。
+// 同时验证 auth register/login 也被 ready Gate 挡住。
 func TestAC9_MissingJWTSecretReadyzAndFailClosed(t *testing.T) {
 	t.Setenv("EMPLOYEE_JWT_SECRET", "")
 	t.Setenv("GUEST_JWT_SECRET", "")
@@ -108,6 +109,33 @@ func TestAC9_MissingJWTSecretReadyzAndFailClosed(t *testing.T) {
 	lk := doJSON(t, r, http.MethodPost, "/v1/meetings/m1/livekit-token", "unused", `{}`)
 	if lk.Code != http.StatusServiceUnavailable {
 		t.Fatalf("livekit-token want 503 got %d %s", lk.Code, lk.Body.String())
+	}
+}
+
+// AC9b: DATABASE_URL 未设置 → readyz 503，且（经 ready Gate）建会失败关闭。
+func TestAC9_UnsetDatabaseURLReadyz503(t *testing.T) {
+	t.Setenv("EMPLOYEE_JWT_SECRET", "emp")
+	t.Setenv("GUEST_JWT_SECRET", "gst")
+	t.Setenv("DATABASE_URL", "")
+
+	checker := ready.FromEnv()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/readyz", ready.HandleReadyz(checker))
+	store := NewMemoryStore()
+	RegisterRoutes(r, store, []byte("emp"), []byte("gst"), "ws://127.0.0.1:17880", "devkey", "secret", true, "metuai-media", nil, nil, NewBreakGlassStore(), NewGuestEmailVerifier(store, nil), nil, checker)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz want 503 got %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "DATABASE_URL") {
+		t.Fatalf("body %s", w.Body.String())
+	}
+	create := doJSON(t, r, http.MethodPost, "/v1/meetings", "unused", `{"title":"x"}`)
+	if create.Code != http.StatusServiceUnavailable {
+		t.Fatalf("create want 503 got %d %s", create.Code, create.Body.String())
 	}
 }
 

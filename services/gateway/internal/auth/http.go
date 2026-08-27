@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"metuai/services/gateway/internal/identity"
+	"metuai/services/gateway/internal/ready"
 )
 
 const minPasswordLen = 8
@@ -26,9 +27,11 @@ type loginBody struct {
 }
 
 // RegisterRoutes 挂载 POST /v1/auth/register 与 /v1/auth/login。
-// employeeSecret 为空时两个接口均 503（与 /readyz fail-closed 一致）。
-func RegisterRoutes(r *gin.Engine, users UserStore, employeeSecret []byte) {
-	r.POST("/v1/auth/register", func(c *gin.Context) {
+// 未就绪（缺 JWT 密钥或 DATABASE_URL 未设/不可达）时两个接口均 503，与 /readyz 一致。
+// employeeSecret 为空时额外 503（单测与防御）。
+func RegisterRoutes(r *gin.Engine, users UserStore, employeeSecret []byte, readiness *ready.Checker) {
+	mustReady := ready.Gate(readiness)
+	r.POST("/v1/auth/register", mustReady, func(c *gin.Context) {
 		if len(employeeSecret) == 0 {
 			writeSecretUnavailable(c)
 			return
@@ -72,7 +75,7 @@ func RegisterRoutes(r *gin.Engine, users UserStore, employeeSecret []byte) {
 		c.JSON(http.StatusCreated, authSuccess(token, user))
 	})
 
-	r.POST("/v1/auth/login", func(c *gin.Context) {
+	r.POST("/v1/auth/login", mustReady, func(c *gin.Context) {
 		if len(employeeSecret) == 0 {
 			writeSecretUnavailable(c)
 			return

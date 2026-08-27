@@ -24,25 +24,7 @@ import (
 func main() {
 	cfg := config.FromEnv()
 
-	var repo meeting.Repository
-	var users auth.UserStore
-	if cfg.DatabaseURL != "" {
-		pgStore, err := meeting.NewPGStore(context.Background(), cfg.DatabaseURL)
-		if err != nil {
-			log.Fatal(err)
-		}
-		repo = pgStore
-		userStore, err := auth.NewPGStoreFromPool(context.Background(), pgStore.Pool())
-		if err != nil {
-			log.Fatal(err)
-		}
-		users = userStore
-		log.Printf("auth user store: postgres")
-	} else {
-		repo = meeting.NewMemoryStore()
-		users = auth.NewMemoryStore()
-		log.Printf("auth user store: memory")
-	}
+	repo, users, dbPing := openStores(context.Background(), cfg.DatabaseURL)
 
 	uploadRoot := os.Getenv("UPLOAD_SPOOL_DIR")
 	if uploadRoot == "" {
@@ -148,12 +130,12 @@ func main() {
 		})
 	})
 	readiness := ready.FromEnv()
-	// 若 main 已成功用 DATABASE_URL 建了 PG 连接，复用该池探测，避免重复拨号。
-	if pg, ok := repo.(*meeting.PGStore); ok {
-		readiness.Ping = pg.Ping
+	// 若已成功建 PG 池，复用该池探测；否则 Checker 对非空 DATABASE_URL 自行拨号（坏 DSN → 503）。
+	if dbPing != nil {
+		readiness.Ping = dbPing
 	}
 	r.GET("/readyz", ready.HandleReadyz(readiness))
-	auth.RegisterRoutes(r, users, cfg.EmployeeJWTSecret)
+	auth.RegisterRoutes(r, users, cfg.EmployeeJWTSecret, readiness)
 	var mediaSigner meeting.MediaURLSigner
 	if blobs != nil && blobs.Enabled() {
 		mediaSigner = blobs
