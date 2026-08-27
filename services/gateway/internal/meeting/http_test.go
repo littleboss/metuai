@@ -72,8 +72,8 @@ func testRouterWithEgress(t *testing.T, allowEmployeeWeb bool, orch EgressOrches
 
 func testRouterWithEgressAndVerification(t *testing.T, allowEmployeeWeb bool, orch EgressOrchestrator, sender GuestVerificationSender) (*gin.Engine, *Store, []byte, []byte) {
 	t.Helper()
-	// 单测默认视为已配置私有 LLM，便于会后链路跑通纪要；AC4 等用例会显式清空。
-	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
+	// 单测默认挂私有 LLM stub，便于会后链路跑通纪要；AC4 / P1-3 等用例会显式清空。
+	stubPrivateLLM(t, "")
 	gin.SetMode(gin.TestMode)
 	secretEmp := []byte("emp")
 	secretGst := []byte("gst")

@@ -114,7 +114,7 @@ type ActionItem struct {
 }
 
 // MeetingSummary 对齐架构 §6.3 的结构化纪要。
-// OriginalJSON 是 AI 原稿，修订时不得覆盖。
+// OriginalJSON 是 AI 原稿，修订时不得覆盖。Model 记录生成所用私有 LLM。
 type MeetingSummary struct {
 	MeetingID     string       `json:"meeting_id"`
 	Summary       string       `json:"summary"`
@@ -123,6 +123,7 @@ type MeetingSummary struct {
 	Risks         []CitedItem  `json:"risks"`
 	OpenQuestions []CitedItem  `json:"open_questions"`
 	OriginalJSON  string       `json:"original_json,omitempty"`
+	Model         string       `json:"model,omitempty"`
 	CreatedAt     time.Time    `json:"created_at"`
 	RevisedAt     *time.Time   `json:"revised_at,omitzero"`
 }

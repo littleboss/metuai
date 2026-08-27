@@ -12,7 +12,7 @@ import (
 )
 
 func TestRunFakePipelineProducesTranscriptAndSummary(t *testing.T) {
-	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
+	stubPrivateLLM(t, "")
 	r, store, secretEmp, _ := testRouter(t)
 	emp := employeeJWT(t, secretEmp)
 	id, _ := createMeeting(t, r, emp)
@@ -70,7 +70,7 @@ func TestRunFakePipelineProducesTranscriptAndSummary(t *testing.T) {
 // 接线 Egress 后，媒体不再只有 pending 一种非 ready 状态：
 // 真实录制留下的 started / failed 也必须被假流水线推进，否则 PoC 会卡在 MEDIA_READY。
 func TestRunFakePipelinePromotesStartedAndFailedMedia(t *testing.T) {
-	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
+	stubPrivateLLM(t, "")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	for _, a := range []MediaArtifact{
@@ -106,7 +106,7 @@ func TestRunFakePipelinePromotesStartedAndFailedMedia(t *testing.T) {
 }
 
 func TestRunFakePipelineMarksLocalFallbackWhenLocalMicReady(t *testing.T) {
-	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
+	stubPrivateLLM(t, "")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	if _, err := s.AddMediaArtifact(MediaArtifact{
@@ -140,7 +140,7 @@ func TestRunFakePipelineMarksLocalFallbackWhenLocalMicReady(t *testing.T) {
 }
 
 func TestRunFakePipelineIndexesIntoKnowledge(t *testing.T) {
-	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
+	stubPrivateLLM(t, "")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	if err := s.End(id); err != nil {
@@ -171,7 +171,7 @@ func TestRunFakePipelineIndexesIntoKnowledge(t *testing.T) {
 }
 
 func TestRunFakePipelineBindsOrganizerAndCitesSegments(t *testing.T) {
-	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
+	stubPrivateLLM(t, "")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	if err := s.MarkMemberJoined(id, "u-1", "Alice"); err != nil {

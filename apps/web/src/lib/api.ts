@@ -449,6 +449,7 @@ export type MeetingSummary = {
   risks: CitedItem[]
   open_questions: CitedItem[]
   original_json?: string
+  model?: string
   created_at: string
   revised_at?: string
 }
@@ -471,18 +472,6 @@ export async function getPipeline(
   })
   await assertOk(response)
   return response.json() as Promise<PipelineStatus>
-}
-
-export async function runFakePipeline(
-  meetingId: string,
-  token: string,
-): Promise<{ pipeline_stage: string }> {
-  const response = await fetch(`/v1/meetings/${meetingId}/pipeline/run-fake`, {
-    method: 'POST',
-    headers: authHeaders(token),
-  })
-  await assertOk(response)
-  return response.json() as Promise<{ pipeline_stage: string }>
 }
 
 /** 网关内 stub ASR → TRANSCRIPT_READY（不启 Python / FunASR）。 */
@@ -560,6 +549,22 @@ export async function getSummary(
     method: 'GET',
     headers: authHeaders(token),
   })
+  await assertOk(response)
+  return response.json() as Promise<MeetingSummary>
+}
+
+/** 组织者/共同组织者触发私有 LLM 纪要生成（会议须已结束）。 */
+export async function generateSummary(
+  meetingId: string,
+  token: string,
+): Promise<MeetingSummary | { accepted: true }> {
+  const response = await fetch(`/v1/meetings/${meetingId}/summary/generate`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  })
+  if (response.status === 202) {
+    return { accepted: true }
+  }
   await assertOk(response)
   return response.json() as Promise<MeetingSummary>
 }

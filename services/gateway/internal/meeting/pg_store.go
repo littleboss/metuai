@@ -127,11 +127,13 @@ CREATE TABLE IF NOT EXISTS meeting_summaries (
   risks_json TEXT NOT NULL DEFAULT '[]',
   open_questions_json TEXT NOT NULL DEFAULT '[]',
   original_json TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
   revised_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL
 );
 ALTER TABLE meeting_summaries ADD COLUMN IF NOT EXISTS original_json TEXT NOT NULL DEFAULT '';
 ALTER TABLE meeting_summaries ADD COLUMN IF NOT EXISTS revised_at TIMESTAMPTZ;
+ALTER TABLE meeting_summaries ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS summary_revisions (
   id TEXT PRIMARY KEY,
   meeting_id TEXT NOT NULL,
@@ -792,8 +794,8 @@ func (s *PGStore) UpsertSummary(summary MeetingSummary) error {
 	openQ, _ := json.Marshal(summary.OpenQuestions)
 	_, err := s.pool.Exec(context.Background(),
 		`INSERT INTO meeting_summaries
-		 (meeting_id, summary, decisions_json, action_items_json, risks_json, open_questions_json, original_json, revised_at, created_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		 (meeting_id, summary, decisions_json, action_items_json, risks_json, open_questions_json, original_json, model, revised_at, created_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		 ON CONFLICT (meeting_id) DO UPDATE SET
 		   summary=EXCLUDED.summary,
 		   decisions_json=EXCLUDED.decisions_json,
@@ -801,9 +803,10 @@ func (s *PGStore) UpsertSummary(summary MeetingSummary) error {
 		   risks_json=EXCLUDED.risks_json,
 		   open_questions_json=EXCLUDED.open_questions_json,
 		   original_json=CASE WHEN meeting_summaries.original_json = '' THEN EXCLUDED.original_json ELSE meeting_summaries.original_json END,
+		   model=CASE WHEN EXCLUDED.model = '' THEN meeting_summaries.model ELSE EXCLUDED.model END,
 		   revised_at=EXCLUDED.revised_at,
 		   created_at=meeting_summaries.created_at`,
-		summary.MeetingID, summary.Summary, string(dec), string(act), string(risks), string(openQ), summary.OriginalJSON, summary.RevisedAt, summary.CreatedAt,
+		summary.MeetingID, summary.Summary, string(dec), string(act), string(risks), string(openQ), summary.OriginalJSON, summary.Model, summary.RevisedAt, summary.CreatedAt,
 	)
 	return err
 }
@@ -813,9 +816,9 @@ func (s *PGStore) GetSummary(meetingID string) (MeetingSummary, bool) {
 	var dec, act, risks, openQ string
 	err := s.pool.QueryRow(context.Background(),
 		`SELECT meeting_id, summary, decisions_json, action_items_json, risks_json, open_questions_json,
-		        COALESCE(original_json, ''), revised_at, created_at
+		        COALESCE(original_json, ''), COALESCE(model, ''), revised_at, created_at
 		 FROM meeting_summaries WHERE meeting_id=$1`, meetingID,
-	).Scan(&sum.MeetingID, &sum.Summary, &dec, &act, &risks, &openQ, &sum.OriginalJSON, &sum.RevisedAt, &sum.CreatedAt)
+	).Scan(&sum.MeetingID, &sum.Summary, &dec, &act, &risks, &openQ, &sum.OriginalJSON, &sum.Model, &sum.RevisedAt, &sum.CreatedAt)
 	if err != nil {
 		return MeetingSummary{}, false
 	}
