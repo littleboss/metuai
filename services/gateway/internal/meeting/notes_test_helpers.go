@@ -12,7 +12,7 @@ import (
 func stubPrivateLLM(t *testing.T, notesJSON string) *httptest.Server {
 	t.Helper()
 	if notesJSON == "" {
-		notesJSON = `{"summary":"stub summary from private LLM","decisions":[],"action_items":[{"task":"跟进转写中的事项"}],"risks":[],"open_questions":[]}`
+		notesJSON = `{"summary":"会议转写摘要（私有 LLM stub）","decisions":[],"action_items":[{"task":"跟进转写中的事项"}],"risks":[],"open_questions":[]}`
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

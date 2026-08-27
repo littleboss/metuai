@@ -50,6 +50,7 @@ func GenerateMeetingSummary(ctx context.Context, repo Repository, meetingID stri
 	if err := validateActionOwners(repo, meetingID, draft.ActionItems); err != nil {
 		return MeetingSummary{}, err
 	}
+	draft.ActionItems = groundActionItems(draft.ActionItems, segments)
 
 	sum := MeetingSummary{
 		MeetingID:     meetingID,
@@ -98,4 +99,28 @@ func validateSummaryDelivery(sum MeetingSummary) error {
 		}
 	}
 	return nil
+}
+
+// groundActionItems 在模型未给出引用时，用本场转写片段 ID 做最小 grounding（不发明内容）。
+func groundActionItems(items []ActionItem, segments []TranscriptSegment) []ActionItem {
+	if len(items) == 0 || len(segments) == 0 {
+		return items
+	}
+	segIDs := make([]string, 0, len(segments))
+	for _, s := range segments {
+		if s.ID != "" {
+			segIDs = append(segIDs, s.ID)
+		}
+	}
+	if len(segIDs) == 0 {
+		return items
+	}
+	out := make([]ActionItem, len(items))
+	copy(out, items)
+	for i := range out {
+		if len(out[i].SourceSegmentIDs) == 0 {
+			out[i].SourceSegmentIDs = append([]string(nil), segIDs...)
+		}
+	}
+	return out
 }
