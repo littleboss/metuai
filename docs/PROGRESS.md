@@ -25,10 +25,10 @@
 | 文档要求 | 状态 | 当前事实与缺口 |
 |---|---|---|
 | 即时建会、自动密码、录音确认、LiveKit 入会 | **已实现（代码级）** | 网关、Web UI 和令牌测试已覆盖；房间密码已改为 bcrypt，兼容旧 SHA-256 记录。 |
-| `/readyz` 与签发失败关闭 | **已实现（代码级）** | `EMPLOYEE_JWT_SECRET` / `GUEST_JWT_SECRET` **无代码默认值**；未设置或 DB 不可达时 503 + `missing[]`。未就绪时 create / guest-session / livekit-token 不签发。`/healthz` 仍为存活探针。 |
+| `/readyz` 与签发失败关闭 | **已实现（代码级）** | `EMPLOYEE_JWT_SECRET` / `GUEST_JWT_SECRET` **无代码默认值**；未设置或 DB 不可达时 503 + `missing[]`。未就绪时 **auth register/login**、create / guest-session / livekit-token 均不签发。坏 `DATABASE_URL` 启动不 Fatal，进程继续听端口（`/healthz` 200）。空 `DATABASE_URL` 禁止用内存用户库冒充就绪。 |
 | 纪要不发明内容 | **已实现（P0 交付）** | 无转写 → `422 no_transcript`；未配 `PRIVATE_LLM_URL` → `503 AI_NOT_CONFIGURED`；不出站公网 LLM。有转写且私有 LLM 配置后 GET summary 要求非空 `summary` 与 `action_items[].task`。 |
 | Aura Web 壳 | **已实现（代码级）** | 单卡片 Auth（登录/注册切换，邮箱+密码+display_name）→ List → Lobby → JoinGate → MeetingStage → Notes + 401/403/503。 |
-| 本地 register/login | **已实现（代码级）** | `POST /v1/auth/register`（201）与 `/v1/auth/login`（200）签发员工 JWT；用户表 bcrypt；空 `EMPLOYEE_JWT_SECRET` → 503。 |
+| 本地 register/login | **已实现（代码级）** | `POST /v1/auth/register`（201）与 `/v1/auth/login`（200）签发员工 JWT；用户表 bcrypt；与 `/readyz` 同 Gate（缺密钥或 `DATABASE_URL` 未设/不可达 → 503）。 |
 | 员工必须使用 Tauri，浏览器不能开会 | **部分实现** | 有 Tauri 壳和服务端拦截，但当前只检查可伪造的 `X-Metuai-Client`，且开发默认允许 Web；没有设备注册/证明与稳定深链闭环。 |
 | 进会前自动开始员工本机麦克风备份 | **已实现（流程接线）** | Tauri 在页面进入房间前启动录音，启动失败会阻止进会；普通浏览器和嘉宾不启用。真设备权限仍需手工验证。 |
 | 分块、checksum、加密 spool、断点续传 | **部分实现** | Rust/网关均有测试，队列会落盘；桌面端启动或进会且录音为空闲时会尝试自动续传待传队列，失败时仍可手动点恢复。设备注销、吊销和密钥轮换未做。 |
@@ -99,6 +99,7 @@
 22. GET 转写/纪要/媒体记 `artifact_view`；离会记 `meeting_left`；首页可点选近期同事并发出邀请。
 23. 无 SMTP 时组织者可出示会中验证码并复制魔法链接；添加会外分享也会返回码和链接。员工加载会议列表记 `employee_login`，首页可退出并记 `employee_logout`。人工复核接口附带死信任务。
 24. Vespa Search 改为 ACL-first YQL（httptest 断言请求体；失败才退回本地副本）。会中嘉宾名单带入会显示名。转写/纪要下载会保存 JSON，并新增 `export` + `artifact_export`。语言字段用启发式填写，明确不是 FunASR。
+25. AC9：`/v1/auth/register|login` 纳入 ready Gate；空 `DATABASE_URL` 禁止内存用户库签发；坏 DSN 启动不 Fatal，`/healthz` 仍 200。
 
 ## 自动化验证
 

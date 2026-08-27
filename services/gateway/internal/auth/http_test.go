@@ -20,7 +20,7 @@ func testAuthRouter(t *testing.T, secret []byte) (*gin.Engine, auth.UserStore) {
 	gin.SetMode(gin.TestMode)
 	users := auth.NewMemoryStore()
 	r := gin.New()
-	auth.RegisterRoutes(r, users, secret)
+	auth.RegisterRoutes(r, users, secret, ready.AlwaysReady())
 	store := meeting.NewMemoryStore()
 	meeting.RegisterRoutes(r, store, secret, []byte("gst"), "ws://127.0.0.1:17880", "devkey", "secret", true, "metuai-media", nil, knowledge.NewMemoryIndex(), meeting.NewBreakGlassStore(), meeting.NewGuestEmailVerifier(store, nil), nil, ready.AlwaysReady())
 	return r, users
@@ -182,7 +182,8 @@ func TestLoginPasswordTooShort400(t *testing.T) {
 func TestAuthEmptySecret503(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	auth.RegisterRoutes(r, auth.NewMemoryStore(), nil)
+	// AlwaysReady 只绕过 DB；空密钥仍由 handler 失败关闭。
+	auth.RegisterRoutes(r, auth.NewMemoryStore(), nil, ready.AlwaysReady())
 
 	reg := doJSON(t, r, http.MethodPost, "/v1/auth/register", "",
 		`{"email":"a@corp.local","password":"password1"}`)
@@ -198,5 +199,87 @@ func TestAuthEmptySecret503(t *testing.T) {
 		if !strings.Contains(body, "EMPLOYEE_JWT_SECRET") {
 			t.Fatalf("503 body should mention missing secret: %s", body)
 		}
+	}
+}
+
+// AC9: DATABASE_URL 未设置时 readyz 与 register/login 均为 503（禁止内存用户库冒充就绪）。
+func TestAC9_UnsetDatabaseURLAuthAndReadyz503(t *testing.T) {
+	t.Setenv("EMPLOYEE_JWT_SECRET", "emp-secret")
+	t.Setenv("GUEST_JWT_SECRET", "gst-secret")
+	t.Setenv("DATABASE_URL", "")
+
+	checker := ready.FromEnv()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/readyz", ready.HandleReadyz(checker))
+	auth.RegisterRoutes(r, auth.NewMemoryStore(), []byte("emp-secret"), checker)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz want 503 got %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "DATABASE_URL") {
+		t.Fatalf("readyz missing DATABASE_URL: %s", w.Body.String())
+	}
+
+	reg := doJSON(t, r, http.MethodPost, "/v1/auth/register", "",
+		`{"email":"alice@corp.local","password":"password1","display_name":"Alice"}`)
+	if reg.Code != http.StatusServiceUnavailable {
+		t.Fatalf("register want 503 got %d %s (memory fallback must not succeed)", reg.Code, reg.Body.String())
+	}
+	if !strings.Contains(reg.Body.String(), "DATABASE_URL") {
+		t.Fatalf("register 503 should list DATABASE_URL: %s", reg.Body.String())
+	}
+	login := doJSON(t, r, http.MethodPost, "/v1/auth/login", "",
+		`{"email":"alice@corp.local","password":"password1"}`)
+	if login.Code != http.StatusServiceUnavailable {
+		t.Fatalf("login want 503 got %d %s", login.Code, login.Body.String())
+	}
+	if !strings.Contains(login.Body.String(), "DATABASE_URL") {
+		t.Fatalf("login 503 should list DATABASE_URL: %s", login.Body.String())
+	}
+}
+
+// AC9: 坏 DSN 时进程仍可响应；readyz/auth 503（missing 含 DATABASE_URL）。
+func TestAC9_BadDSNReadyzAndAuth503(t *testing.T) {
+	badDSN := "postgres://metuai:metuai@127.0.0.1:1/metuai?sslmode=disable"
+	t.Setenv("EMPLOYEE_JWT_SECRET", "emp-secret")
+	t.Setenv("GUEST_JWT_SECRET", "gst-secret")
+	t.Setenv("DATABASE_URL", badDSN)
+
+	checker := ready.FromEnv()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	r.GET("/readyz", ready.HandleReadyz(checker))
+	auth.RegisterRoutes(r, auth.NewMemoryStore(), []byte("emp-secret"), checker)
+
+	hw := httptest.NewRecorder()
+	r.ServeHTTP(hw, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if hw.Code != http.StatusOK {
+		t.Fatalf("healthz want 200 got %d", hw.Code)
+	}
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz want 503 got %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "DATABASE_URL") {
+		t.Fatalf("readyz missing DATABASE_URL: %s", w.Body.String())
+	}
+
+	reg := doJSON(t, r, http.MethodPost, "/v1/auth/register", "",
+		`{"email":"alice@corp.local","password":"password1"}`)
+	if reg.Code != http.StatusServiceUnavailable {
+		t.Fatalf("register want 503 got %d %s", reg.Code, reg.Body.String())
+	}
+	login := doJSON(t, r, http.MethodPost, "/v1/auth/login", "",
+		`{"email":"alice@corp.local","password":"password1"}`)
+	if login.Code != http.StatusServiceUnavailable {
+		t.Fatalf("login want 503 got %d %s", login.Code, login.Body.String())
 	}
 }
