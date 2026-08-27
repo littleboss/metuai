@@ -5,6 +5,7 @@ import { parseApiError } from '../aura/parseApiError'
 import { Button } from '../aura/Button'
 import { SecretField, TextField } from '../aura/TextField'
 import { ackRecording, guestSession, livekitToken } from '../lib/api'
+import { AuthPage } from './AuthPage'
 
 type JoinGatePageProps = {
   meetingId: string
@@ -15,16 +16,19 @@ type JoinGatePageProps = {
 /**
  * 入会门：显示名 → 房间密码 → 录音确认勾选。
  * 未勾选禁用加入；错误密码展示 403 invalid_password；未确认录音不得进入网格。
+ * 员工模式依赖已登录会话（register/login 由 Nexus 契约接入）；不在此粘贴 JWT。
  */
 export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [recordingAccepted, setRecordingAccepted] = useState(false)
-  const [employeeToken, setEmployeeToken] = useState(
-    () => sessionStorage.getItem('employeeToken') ?? '',
-  )
+  const employeeToken = sessionStorage.getItem('employeeToken') ?? ''
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<{ error?: string; message?: string }>({})
+
+  if (mode === 'employee' && !employeeToken.trim()) {
+    return <AuthPage />
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -35,14 +39,8 @@ export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
     try {
       if (mode === 'employee') {
         const token = employeeToken.trim()
-        if (!token) {
-          setErr({ error: 'unauthorized', message: '请粘贴员工 JWT' })
-          setLoading(false)
-          return
-        }
         await ackRecording(meetingId, token, password || undefined)
         const credentials = await livekitToken(meetingId, token)
-        sessionStorage.setItem('employeeToken', token)
         sessionStorage.setItem('lkToken', credentials.token)
         sessionStorage.setItem('lkUrl', credentials.livekit_url)
         sessionStorage.setItem('meetingId', meetingId)
@@ -71,18 +69,18 @@ export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
 
   return (
     <AppShell title="METUAI / 入会">
-      <div className="mx-auto w-full max-w-md space-y-6">
+      <div className="mx-auto flex w-full max-w-md flex-col gap-2">
         <div className="space-y-2">
           <h1 className="text-lg font-semibold tracking-tight">
             {mode === 'employee' ? '员工入会' : '嘉宾入会'}
           </h1>
           <p className="font-mono text-xs tracking-[0.2em] text-secondary">{meetingId}</p>
-          <p className="text-sm text-secondary">确认显示名、房间密码与录音须知后进入会场。</p>
+          <p className="text-sm text-secondary">确认房间密码与录音须知后进入会场。</p>
         </div>
 
         <Banner error={err.error} message={err.message} />
 
-        <form className="space-y-4" onSubmit={(e) => void handleSubmit(e)}>
+        <form className="flex flex-col gap-2" onSubmit={(e) => void handleSubmit(e)}>
           {mode === 'guest' ? (
             <TextField
               label="显示名称"
@@ -91,14 +89,7 @@ export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
               required
               autoComplete="name"
             />
-          ) : (
-            <SecretField
-              label="员工 JWT"
-              value={employeeToken}
-              onChange={(e) => setEmployeeToken(e.target.value)}
-              required
-            />
-          )}
+          ) : null}
 
           <SecretField
             label="房间密码"
@@ -109,7 +100,7 @@ export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
             hint={mode === 'employee' ? '受邀员工可不填；未受邀员工必须填写' : undefined}
           />
 
-          <label className="flex items-start gap-3 rounded-lg border border-border bg-elevated p-3 text-sm">
+          <label className="flex items-start gap-2 rounded-lg border border-border bg-elevated p-3 text-sm">
             <input
               type="checkbox"
               className="mt-1 size-4 rounded border-border accent-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"

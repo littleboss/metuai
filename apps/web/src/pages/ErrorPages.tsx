@@ -6,7 +6,7 @@ export function Error401({ message }: { message?: string }) {
   return (
     <AppShell>
       <h1 className="text-lg font-semibold tracking-tight">未授权</h1>
-      <Banner error="unauthorized" message={message ?? '请粘贴有效的企业员工 JWT 后重试。'} />
+      <Banner error="unauthorized" message={message ?? '请先登录后再试。'} />
       <Button onClick={() => window.location.assign('/')}>返回</Button>
     </AppShell>
   )
@@ -36,7 +36,7 @@ export function Error503({
       <h1 className="text-lg font-semibold tracking-tight">服务未就绪</h1>
       <Banner error="not_ready" message={message ?? '网关尚未就绪，请稍后重试。'} />
       {missing && missing.length > 0 ? (
-        <ul className="rounded-lg border border-border bg-surface p-3 text-sm text-secondary">
+        <ul className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-3 text-sm text-secondary">
           {missing.map((item) => (
             <li key={item} className="font-mono">
               {item}

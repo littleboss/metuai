@@ -13,7 +13,7 @@ export function parseApiError(raw: unknown): { error?: string; message?: string 
     /* 非 JSON */
   }
   if (text.includes('401') || /unauthorized/i.test(text)) {
-    return { error: 'unauthorized', message: '未授权，请粘贴有效的员工 JWT' }
+    return { error: 'unauthorized', message: '未授权，请先登录' }
   }
   return { message: text || '请求失败' }
 }

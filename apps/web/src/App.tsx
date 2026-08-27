@@ -14,6 +14,7 @@ function usePath() {
 
 function App() {
   const path = usePath()
+  // 会话令牌由未来 register/login 写入；本 PR 不实现登录。
   const [employeeToken, setEmployeeToken] = useState(
     () => sessionStorage.getItem('employeeToken') ?? '',
   )
@@ -67,20 +68,14 @@ function App() {
       sessionStorage.getItem('authToken') ||
       sessionStorage.getItem('employeeToken') ||
       ''
-    if (!auth) return <Error401 message="查看纪要需要有效会话令牌。" />
+    if (!auth) return <Error401 message="查看纪要需要有效会话。" />
     return <NotesPage meetingId={meetingId} authToken={auth} />
   }
 
   if (lobbyMatch) {
     const meetingId = decodeURIComponent(lobbyMatch[1])
     if (!employeeToken) {
-      return (
-        <AuthPage
-          onAuthenticated={(tok) => {
-            setEmployeeToken(tok)
-          }}
-        />
-      )
+      return <AuthPage />
     }
     return (
       <LobbyPage
@@ -92,13 +87,7 @@ function App() {
   }
 
   if (!employeeToken) {
-    return (
-      <AuthPage
-        onAuthenticated={(tok) => {
-          setEmployeeToken(tok)
-        }}
-      />
-    )
+    return <AuthPage />
   }
 
   return (
