@@ -171,3 +171,16 @@ func TestIterAuthoritativeAudioSourcesPrefersTrackOverLocalMic(t *testing.T) {
 		t.Fatalf("kind=%s", out[0].Kind)
 	}
 }
+
+func TestRunASRStubRouteRemoved(t *testing.T) {
+	r, _, secretEmp, _ := testRouter(t)
+	emp := employeeJWT(t, secretEmp)
+	id, _ := createMeeting(t, r, emp)
+	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", emp, ""); end.Code != http.StatusOK {
+		t.Fatalf("end %d", end.Code)
+	}
+	got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/pipeline/run-asr-stub", emp, "")
+	if got.Code != http.StatusNotFound {
+		t.Fatalf("run-asr-stub must be gone (404), got %d %s", got.Code, got.Body.String())
+	}
+}

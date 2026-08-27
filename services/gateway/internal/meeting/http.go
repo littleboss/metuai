@@ -1007,31 +1007,6 @@ func RegisterRoutes(
 		})
 	})
 
-	// 会后页一键 stub ASR（不启 Python）；真模型仍走 Worker。
-	r.POST("/v1/meetings/:id/pipeline/run-asr-stub", employeeAuth, func(c *gin.Context) {
-		meetingID := c.Param("id")
-		current, ok := repo.Get(meetingID)
-		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
-			return
-		}
-		if !current.Ended {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "meeting_not_ended"})
-			return
-		}
-		if !requireOrganizer(c, repo, current) {
-			return
-		}
-		principal := identity.MustPrincipal(c)
-		actor := PrincipalKey(principal.Kind, principal.UserID, principal.GuestID)
-		stage, err := RunASRStub(repo, meetingID, actor)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "pipeline_stage": stage, "backend": "stub"})
-	})
-
 	r.POST("/v1/meetings/:id/pipeline/manual-review", employeeAuth, func(c *gin.Context) {
 		meetingID := c.Param("id")
 		current, ok := repo.Get(meetingID)

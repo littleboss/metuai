@@ -1,4 +1,5 @@
 import type { ActionItem } from '../lib/api'
+import { Button } from './Button'
 import { EmptyState } from './EmptyState'
 
 type NotesPanelProps = {
@@ -6,6 +7,10 @@ type NotesPanelProps = {
   summary?: string
   actionItems?: ActionItem[]
   onToggleDone?: (index: number) => void
+  /** 组织者触发生成纪要；无转写时应禁用。 */
+  onGenerate?: () => void
+  generateDisabled?: boolean
+  showGenerate?: boolean
 }
 
 function GeneratingSkeleton() {
@@ -56,8 +61,36 @@ function TodoList({
   )
 }
 
+function GenerateNotesButton({
+  onGenerate,
+  disabled,
+}: {
+  onGenerate?: () => void
+  disabled?: boolean
+}) {
+  if (!onGenerate) return null
+  return (
+    <Button
+      variant="ghost"
+      onClick={onGenerate}
+      disabled={disabled}
+      data-testid="generate-notes"
+    >
+      生成纪要
+    </Button>
+  )
+}
+
 /** 纪要面板：GeneratingSkeleton | NoTranscriptEmpty | Summary+TodoList。 */
-export function NotesPanel({ mode, summary, actionItems = [], onToggleDone }: NotesPanelProps) {
+export function NotesPanel({
+  mode,
+  summary,
+  actionItems = [],
+  onToggleDone,
+  onGenerate,
+  generateDisabled,
+  showGenerate,
+}: NotesPanelProps) {
   if (mode === 'generating') {
     return <GeneratingSkeleton />
   }
@@ -66,6 +99,11 @@ export function NotesPanel({ mode, summary, actionItems = [], onToggleDone }: No
       <EmptyState
         title="暂无转写"
         description="没有转写时不会生成纪要，也不会发明人名或待办。"
+        action={
+          showGenerate ? (
+            <GenerateNotesButton onGenerate={onGenerate} disabled={generateDisabled ?? true} />
+          ) : null
+        }
       />
     )
   }
