@@ -1126,6 +1126,41 @@ func RegisterRoutes(
 		c.JSON(http.StatusOK, sum)
 	})
 
+	// 组织者/共同组织者触发私有 ASR 转写生成（会议须已结束）。
+	r.POST("/v1/meetings/:id/transcript/generate", employeeAuth, func(c *gin.Context) {
+		meetingID := c.Param("id")
+		current, ok := repo.Get(meetingID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found", "message": "unknown meeting"})
+			return
+		}
+		if !requireOrganizer(c, repo, current) {
+			return
+		}
+		if !current.Ended {
+			writeASRError(c, ErrMeetingNotEnded)
+			return
+		}
+		principal := identity.MustPrincipal(c)
+		actor := PrincipalKey(principal.Kind, principal.UserID, principal.GuestID)
+		segs, stage, err := GenerateMeetingTranscript(c.Request.Context(), repo, meetingID, actor, mediaSigner, s3Bucket)
+		if err != nil {
+			writeASRError(c, err)
+			return
+		}
+		_ = repo.AppendAudit(AuditEvent{
+			MeetingID: meetingID,
+			ActorKey:  actor,
+			Action:    "transcript_generated",
+			Detail:    stage,
+		})
+		c.JSON(http.StatusOK, gin.H{
+			"meeting_id":     meetingID,
+			"pipeline_stage": stage,
+			"segments":       segs,
+		})
+	})
+
 	// 组织者/共同组织者触发私有 LLM 纪要生成（会议须已结束）。
 	r.POST("/v1/meetings/:id/summary/generate", employeeAuth, func(c *gin.Context) {
 		meetingID := c.Param("id")

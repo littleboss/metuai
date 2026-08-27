@@ -474,17 +474,21 @@ export async function getPipeline(
   return response.json() as Promise<PipelineStatus>
 }
 
-/** 网关内 stub ASR → TRANSCRIPT_READY（不启 Python / FunASR）。 */
-export async function runAsrStub(
+/** 组织者/共同组织者触发私有 ASR 转写生成（会议须已结束）。 */
+export async function generateTranscript(
   meetingId: string,
   token: string,
-): Promise<{ pipeline_stage: string; backend: string }> {
-  const response = await fetch(`/v1/meetings/${meetingId}/pipeline/run-asr-stub`, {
+): Promise<{ meeting_id: string; pipeline_stage: string; segments: TranscriptSegment[] }> {
+  const response = await fetch(`/v1/meetings/${meetingId}/transcript/generate`, {
     method: 'POST',
     headers: authHeaders(token),
   })
   await assertOk(response)
-  return response.json() as Promise<{ pipeline_stage: string; backend: string }>
+  return response.json() as Promise<{
+    meeting_id: string
+    pipeline_stage: string
+    segments: TranscriptSegment[]
+  }>
 }
 
 export async function retryPipeline(

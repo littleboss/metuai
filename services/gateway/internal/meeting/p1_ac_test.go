@@ -205,6 +205,9 @@ func TestP1_6_NoRunFakeOnUserPath(t *testing.T) {
 			if strings.Contains(text, "pipeline/run-fake") || strings.Contains(text, "runFakePipeline") {
 				entries = append(entries, path)
 			}
+			if strings.Contains(text, "pipeline/run-asr-stub") || strings.Contains(text, "runAsrStub") {
+				entries = append(entries, path)
+			}
 			if strings.Contains(text, "假纪要") || strings.Contains(strings.ToLower(text), "fake-summary") {
 				entries = append(entries, path)
 			}
@@ -215,6 +218,6 @@ func TestP1_6_NoRunFakeOnUserPath(t *testing.T) {
 		t.Fatalf("walk web src: %v", err)
 	}
 	if len(entries) > 0 {
-		t.Fatalf("user path must not retain run-fake / fake-summary: %v", entries)
+		t.Fatalf("user path must not retain run-fake / run-asr-stub / fake-summary: %v", entries)
 	}
 }

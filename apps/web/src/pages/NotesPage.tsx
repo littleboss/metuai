@@ -4,12 +4,16 @@ import { Banner } from '../aura/Banner'
 import { parseApiError } from '../aura/parseApiError'
 import { Button } from '../aura/Button'
 import { NotesPanel } from '../aura/NotesPanel'
+import { TranscriptPanel } from '../aura/TranscriptPanel'
 import {
   completeActionItem,
   generateSummary,
+  generateTranscript,
   getSummary,
+  getTranscript,
   type ActionItem,
   type MeetingSummary,
+  type TranscriptSegment,
 } from '../lib/api'
 
 type NotesPageProps = {
@@ -21,40 +25,87 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** 会后纪要页：GeneratingSkeleton | NoTranscriptEmpty | Summary+TodoList。 */
+/** 会后纪要页：转写三态 + 纪要三态（Aura）。 */
 export function NotesPage({ meetingId, authToken }: NotesPageProps) {
-  const [mode, setMode] = useState<'generating' | 'no-transcript' | 'ready'>('generating')
+  const [transcriptMode, setTranscriptMode] = useState<'generating' | 'no-audio' | 'ready'>('generating')
+  const [segments, setSegments] = useState<TranscriptSegment[]>([])
+  const [notesMode, setNotesMode] = useState<'generating' | 'no-transcript' | 'ready'>('generating')
   const [summary, setSummary] = useState<MeetingSummary | null>(null)
   const [err, setErr] = useState<{ error?: string; message?: string }>({})
+
+  async function loadTranscript() {
+    setTranscriptMode('generating')
+    try {
+      const existing = await getTranscript(meetingId, authToken)
+      if (existing.length > 0) {
+        setSegments(existing)
+        setTranscriptMode('ready')
+        return
+      }
+    } catch {
+      // 空列表或尚未生成时继续尝试 generate。
+    }
+
+    try {
+      const generated = await generateTranscript(meetingId, authToken)
+      setSegments(generated.segments ?? [])
+      setTranscriptMode('ready')
+    } catch (error) {
+      const parsed = parseApiError(error)
+      if (parsed.error === 'no_audio') {
+        setTranscriptMode('no-audio')
+        return
+      }
+      if (parsed.error === 'ASR_NOT_CONFIGURED') {
+        setTranscriptMode('no-audio')
+        setErr({
+          error: 'ASR_NOT_CONFIGURED',
+          message: parsed.message ?? '私有 ASR 未配置；会议仍可使用，不会生成假转写。',
+        })
+        return
+      }
+      if (parsed.error === 'forbidden' || parsed.error === 'organizer_required') {
+        setTranscriptMode('no-audio')
+        setErr({
+          error: parsed.error,
+          message: parsed.message ?? '转写尚未生成，请联系组织者。',
+        })
+        return
+      }
+      setTranscriptMode('no-audio')
+      setErr(parsed)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      setMode('generating')
       setErr({})
+      await loadTranscript()
+      if (cancelled) return
+
+      setNotesMode('generating')
       try {
-        // 已有纪要则直接展示。
         try {
           const existing = await getSummary(meetingId, authToken)
           if (cancelled) return
           setSummary(existing)
-          setMode('ready')
+          setNotesMode('ready')
           return
         } catch (error) {
           const parsed = parseApiError(error)
           if (parsed.error !== 'summary_not_ready') {
             if (cancelled) return
-            setErr(parsed)
+            setErr((prev) => ({ ...prev, ...parsed }))
             if (parsed.error === 'no_transcript') {
-              setMode('no-transcript')
+              setNotesMode('no-transcript')
             } else {
-              setMode('no-transcript')
+              setNotesMode('no-transcript')
             }
             return
           }
         }
 
-        // 未就绪：组织者触发私有 LLM 生成（非组织者可能 403，保持 generating/空态）。
         const generated = await generateSummary(meetingId, authToken)
         if (cancelled) return
         if ('accepted' in generated && generated.accepted) {
@@ -66,45 +117,51 @@ export function NotesPage({ meetingId, authToken }: NotesPageProps) {
               const sum = await getSummary(meetingId, authToken)
               if (cancelled) return
               setSummary(sum)
-              setMode('ready')
+              setNotesMode('ready')
               return
             } catch {
               // keep polling
             }
           }
-          setErr({ error: 'summary_not_ready', message: '纪要仍在生成，请稍后刷新。' })
-          setMode('generating')
+          setErr((prev) => ({
+            ...prev,
+            error: prev.error ?? 'summary_not_ready',
+            message: prev.message ?? '纪要仍在生成，请稍后刷新。',
+          }))
+          setNotesMode('generating')
           return
         }
         setSummary(generated as MeetingSummary)
-        setMode('ready')
+        setNotesMode('ready')
       } catch (error) {
         if (cancelled) return
         const parsed = parseApiError(error)
-        setErr(parsed)
+        setErr((prev) => ({ ...prev, ...parsed }))
         if (parsed.error === 'no_transcript') {
-          setMode('no-transcript')
+          setNotesMode('no-transcript')
         } else if (parsed.error === 'AI_NOT_CONFIGURED') {
-          setMode('no-transcript')
-          setErr({
+          setNotesMode('no-transcript')
+          setErr((prev) => ({
+            ...prev,
             error: 'AI_NOT_CONFIGURED',
             message: parsed.message ?? '私有 LLM 未配置；会议仍可使用，不会发明待办。',
-          })
+          }))
         } else if (parsed.error === 'forbidden' || parsed.error === undefined) {
-          // 非组织者无法触发生成：保持空态提示尚未就绪。
-          setMode('no-transcript')
-          setErr({
-            error: parsed.error,
-            message: parsed.message ?? '纪要尚未生成，请联系组织者。',
-          })
+          setNotesMode('no-transcript')
+          setErr((prev) => ({
+            ...prev,
+            error: prev.error ?? parsed.error,
+            message: prev.message ?? parsed.message ?? '纪要尚未生成，请联系组织者。',
+          }))
         } else {
-          setMode('no-transcript')
+          setNotesMode('no-transcript')
         }
       }
     })()
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once per meeting/token
   }, [meetingId, authToken])
 
   async function toggleDone(index: number) {
@@ -132,13 +189,31 @@ export function NotesPage({ meetingId, authToken }: NotesPageProps) {
         <p className="font-mono text-xs tracking-[0.2em] text-secondary">{meetingId}</p>
       </div>
       <Banner error={err.error} message={err.message} />
-      <div className="rounded-lg border border-border bg-surface p-4">
-        <NotesPanel
-          mode={mode}
-          summary={summary?.summary}
-          actionItems={summary?.action_items}
-          onToggleDone={authToken ? (i) => void toggleDone(i) : undefined}
-        />
+      <div className="space-y-4">
+        <section className="rounded-lg border border-border bg-surface p-4">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold tracking-tight">转写</h2>
+            {transcriptMode === 'no-audio' ? (
+              <Button variant="ghost" onClick={() => void loadTranscript()}>
+                生成转写
+              </Button>
+            ) : null}
+          </div>
+          <TranscriptPanel
+            mode={transcriptMode}
+            segments={segments}
+            onGenerate={() => void loadTranscript()}
+          />
+        </section>
+        <section className="rounded-lg border border-border bg-surface p-4">
+          <h2 className="mb-3 text-lg font-semibold tracking-tight">纪要</h2>
+          <NotesPanel
+            mode={notesMode}
+            summary={summary?.summary}
+            actionItems={summary?.action_items}
+            onToggleDone={authToken ? (i) => void toggleDone(i) : undefined}
+          />
+        </section>
       </div>
     </AppShell>
   )
