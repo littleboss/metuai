@@ -156,7 +156,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -qO- http://127.0.0.1:18080/readyz >/dev/null 2>&1 || wget -qO- http://127.0.0.1:18080/healthz >/dev/null 2>&1 || exit 1",
+          "wget -qO- http://127.0.0.1:18080/readyz >/dev/null 2>&1 || exit 1",
         ]
       interval: 5s
       timeout: 3s
