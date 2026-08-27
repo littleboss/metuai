@@ -1,0 +1,13 @@
+bin/
+*.test
+*.out
+coverage.out
+coverage.html
+vendor/
+.git/
+.gitignore
+**/*_test.go
+**/testdata/
+Dockerfile
+.dockerignore
+*.md
