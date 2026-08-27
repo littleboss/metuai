@@ -25,6 +25,9 @@
 | 文档要求 | 状态 | 当前事实与缺口 |
 |---|---|---|
 | 即时建会、自动密码、录音确认、LiveKit 入会 | **已实现（代码级）** | 网关、Web UI 和令牌测试已覆盖；房间密码已改为 bcrypt，兼容旧 SHA-256 记录。 |
+| `/readyz` 与签发失败关闭 | **已实现（代码级）** | `EMPLOYEE_JWT_SECRET` 显式配置且 `DATABASE_URL` 可达才 200；否则 503 + `missing[]`。未就绪时 create / guest-session / livekit-token 不签发。`/healthz` 仍为存活探针。 |
+| 纪要不发明内容 | **已实现（P0 交付）** | 无转写 → `422 no_transcript`；未配 `PRIVATE_LLM_URL` → `503 AI_NOT_CONFIGURED`；不出站公网 LLM。有转写且私有 LLM 配置后 GET summary 要求非空 `summary` 与 `action_items[].task`。 |
+| Aura Web 壳 | **已实现（代码级）** | `apps/web` 全树改为 Aura tokens：Auth → List → Lobby → JoinGate → MeetingStage → Notes + 401/403/503。 |
 | 员工必须使用 Tauri，浏览器不能开会 | **部分实现** | 有 Tauri 壳和服务端拦截，但当前只检查可伪造的 `X-Metuai-Client`，且开发默认允许 Web；没有设备注册/证明与稳定深链闭环。 |
 | 进会前自动开始员工本机麦克风备份 | **已实现（流程接线）** | Tauri 在页面进入房间前启动录音，启动失败会阻止进会；普通浏览器和嘉宾不启用。真设备权限仍需手工验证。 |
 | 分块、checksum、加密 spool、断点续传 | **部分实现** | Rust/网关均有测试，队列会落盘；桌面端启动或进会且录音为空闲时会尝试自动续传待传队列，失败时仍可手动点恢复。设备注销、吊销和密钥轮换未做。 |

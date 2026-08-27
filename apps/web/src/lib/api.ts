@@ -225,6 +225,24 @@ export async function leaveMeeting(meetingId: string, token: string): Promise<vo
   await assertOk(response)
 }
 
+export type MeetingInfo = {
+  id: string
+  title: string
+  organizer_id: string
+  locked: boolean
+  ended: boolean
+  pipeline_stage: string
+}
+
+export async function getMeeting(meetingId: string, token: string): Promise<MeetingInfo> {
+  const response = await fetch(`/v1/meetings/${meetingId}`, {
+    method: 'GET',
+    headers: authHeaders(token),
+  })
+  await assertOk(response)
+  return response.json() as Promise<MeetingInfo>
+}
+
 export async function ackRecording(
   meetingId: string,
   token: string,
