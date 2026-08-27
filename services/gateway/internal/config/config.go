@@ -9,11 +9,15 @@ import (
 )
 
 type Config struct {
-	HTTPAddr            string
-	DatabaseURL         string
-	EmployeeJWTSecret   []byte
-	GuestJWTSecret      []byte
-	LiveKitURL          string
+	HTTPAddr          string
+	DatabaseURL       string
+	EmployeeJWTSecret []byte
+	GuestJWTSecret    []byte
+	// LiveKitURL 是网关进程内调用 LiveKit SDK / 踢人等用的地址（compose 内多为 ws://livekit:7880）。
+	LiveKitURL string
+	// LiveKitPublicURL 只写进 livekit-token 给浏览器；默认等于 LiveKitURL。
+	// compose 下应设为宿主机可达地址（如 ws://127.0.0.1:17880）。
+	LiveKitPublicURL    string
 	LiveKitAPIKey       string
 	LiveKitAPISecret    string
 	DevAllowEmployeeWeb bool
@@ -41,13 +45,15 @@ type Config struct {
 }
 
 func FromEnv() Config {
+	livekitURL := getenv("LIVEKIT_URL", "ws://127.0.0.1:17880")
 	return Config{
 		HTTPAddr:    getenv("HTTP_ADDR", ":18080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		// JWT 密钥禁止代码内默认值：空/未设置必须保持空，由 /readyz 与签发门闸失败关闭。
 		EmployeeJWTSecret:   []byte(strings.TrimSpace(os.Getenv("EMPLOYEE_JWT_SECRET"))),
 		GuestJWTSecret:      []byte(strings.TrimSpace(os.Getenv("GUEST_JWT_SECRET"))),
-		LiveKitURL:          getenv("LIVEKIT_URL", "ws://127.0.0.1:17880"),
+		LiveKitURL:          livekitURL,
+		LiveKitPublicURL:    getenv("LIVEKIT_PUBLIC_URL", livekitURL),
 		LiveKitAPIKey:       getenv("LIVEKIT_API_KEY", "devkey"),
 		LiveKitAPISecret:    getenv("LIVEKIT_API_SECRET", "secret"),
 		DevAllowEmployeeWeb: getenv("DEV_ALLOW_EMPLOYEE_WEB", "true") == "true",

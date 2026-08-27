@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-ssr/
+coverage/
+.git/
+.gitignore
+*.md
+.oxlintrc.json
+Dockerfile
+.dockerignore
+*.log
+.vite/
+src-tauri/

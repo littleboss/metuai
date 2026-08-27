@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: metuai
     ports:
       - "55432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U metuai"]
       interval: 3s
@@ -79,6 +81,8 @@ services:
     ports:
       - "19000:9000"
       - "19001:9001"
+    volumes:
+      - minio_data:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
       interval: 5s
@@ -97,3 +101,81 @@ services:
       mc mb -p local/metuai-media || true;
       exit 0;
       "
+
+  # Go gateway. JWT secrets must be set at runtime (see .env.example); never baked into the image.
+  api:
+    build:
+      context: ../../services/gateway
+      dockerfile: Dockerfile
+    ports:
+      - "18080:18080"
+    environment:
+      HTTP_ADDR: ":18080"
+      # Fail closed if secrets are missing from the shell or compose .env file.
+      EMPLOYEE_JWT_SECRET: ${EMPLOYEE_JWT_SECRET:?must be set}
+      GUEST_JWT_SECRET: ${GUEST_JWT_SECRET:?must be set}
+      # In-network hosts (override host-dev 127.0.0.1 values from .env.example).
+      DATABASE_URL: postgres://metuai:metuai@postgres:5432/metuai?sslmode=disable
+      LIVEKIT_URL: ws://livekit:7880
+      # Browser-facing LiveKit (published host port); token JSON uses this, not LIVEKIT_URL.
+      LIVEKIT_PUBLIC_URL: ws://127.0.0.1:17880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
+      DEV_ALLOW_EMPLOYEE_WEB: ${DEV_ALLOW_EMPLOYEE_WEB:-true}
+      IDLE_END_MINUTES: ${IDLE_END_MINUTES:-10}
+      UPLOAD_SPOOL_DIR: /tmp/metuai-uploads
+      APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:5173}
+      EGRESS_ENABLED: ${EGRESS_ENABLED:-false}
+      EGRESS_FINALIZE_SECONDS: ${EGRESS_FINALIZE_SECONDS:-8}
+      S3_ENDPOINT: http://minio:9000
+      S3_UPLOAD_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET:-metuai-media}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-metuai}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-metuai-secret}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      # Optional SMTP / spool / Vespa — pass through if set on the host/.env
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_REQUIRE_TLS: ${SMTP_REQUIRE_TLS:-true}
+      METUAI_SPOOL_KEY: ${METUAI_SPOOL_KEY:-}
+      VESPA_URL: ${VESPA_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:18080/readyz >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  # Vite production build behind nginx; proxies /v1 /healthz /readyz to api.
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  minio_data:

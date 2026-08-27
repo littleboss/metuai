@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,16 @@ import (
 	lktoken "metuai/services/gateway/internal/livekit"
 	"metuai/services/gateway/internal/ready"
 )
+
+// browserLiveKitURL 给浏览器用的 LiveKit 地址。
+// LIVEKIT_PUBLIC_URL 优先；未设时回退到 RegisterRoutes 传入的服务端 URL（通常即 LIVEKIT_URL）。
+// 不改 RegisterRoutes 签名：踢人等仍用传入的 livekitURL（compose 内为 ws://livekit:7880）。
+func browserLiveKitURL(serverURL string) string {
+	if v := strings.TrimSpace(os.Getenv("LIVEKIT_PUBLIC_URL")); v != "" {
+		return v
+	}
+	return serverURL
+}
 
 const clientHeader = "X-Metuai-Client"
 
@@ -570,7 +581,7 @@ func RegisterRoutes(
 		cancelEgress()
 		c.JSON(http.StatusOK, gin.H{
 			"token":        token,
-			"livekit_url":  livekitURL,
+			"livekit_url":  browserLiveKitURL(livekitURL),
 			"identity":     identityID,
 			"is_organizer": principal.Kind == identity.KindEmployee && isMeetingManager(repo, currentMeeting, principal.UserID),
 			"meeting_id":   meetingID,
