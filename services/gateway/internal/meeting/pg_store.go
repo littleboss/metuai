@@ -205,6 +205,11 @@ CREATE TABLE IF NOT EXISTS meeting_guest_presence (
 	return &PGStore{pool: pool}, nil
 }
 
+// Ping 供 /readyz 复用已建立的连接池。
+func (s *PGStore) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 func (s *PGStore) Create(title, organizerID, plainPassword string) (Meeting, string, error) {
 	mem := NewMemoryStore()
 	m, plain, err := mem.Create(title, organizerID, plainPassword)

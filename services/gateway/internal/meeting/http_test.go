@@ -15,6 +15,7 @@ import (
 	"metuai/services/gateway/internal/egress"
 	"metuai/services/gateway/internal/identity"
 	"metuai/services/gateway/internal/knowledge"
+	"metuai/services/gateway/internal/ready"
 )
 
 func employeeJWT(t *testing.T, secret []byte) string {
@@ -71,6 +72,8 @@ func testRouterWithEgress(t *testing.T, allowEmployeeWeb bool, orch EgressOrches
 
 func testRouterWithEgressAndVerification(t *testing.T, allowEmployeeWeb bool, orch EgressOrchestrator, sender GuestVerificationSender) (*gin.Engine, *Store, []byte, []byte) {
 	t.Helper()
+	// 单测默认视为已配置私有 LLM，便于会后链路跑通纪要；AC4 等用例会显式清空。
+	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
 	gin.SetMode(gin.TestMode)
 	secretEmp := []byte("emp")
 	secretGst := []byte("gst")
@@ -80,7 +83,7 @@ func testRouterWithEgressAndVerification(t *testing.T, allowEmployeeWeb bool, or
 	if orch != nil {
 		rt = NewEgressRuntime(orch, "metuai-media")
 	}
-	RegisterRoutes(r, store, secretEmp, secretGst, "ws://127.0.0.1:17880", "devkey", "secret", allowEmployeeWeb, "metuai-media", rt, knowledge.NewMemoryIndex(), NewBreakGlassStore(), NewGuestEmailVerifier(store, sender), nil)
+	RegisterRoutes(r, store, secretEmp, secretGst, "ws://127.0.0.1:17880", "devkey", "secret", allowEmployeeWeb, "metuai-media", rt, knowledge.NewMemoryIndex(), NewBreakGlassStore(), NewGuestEmailVerifier(store, sender), nil, ready.AlwaysReady())
 	return r, store, secretEmp, secretGst
 }
 

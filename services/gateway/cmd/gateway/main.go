@@ -16,6 +16,7 @@ import (
 	"metuai/services/gateway/internal/knowledge"
 	lktoken "metuai/services/gateway/internal/livekit"
 	"metuai/services/gateway/internal/meeting"
+	"metuai/services/gateway/internal/ready"
 	"metuai/services/gateway/internal/upload"
 )
 
@@ -136,6 +137,12 @@ func main() {
 			"break_glass":        bgBackend,
 		})
 	})
+	readiness := ready.FromEnv()
+	// 若 main 已成功用 DATABASE_URL 建了 PG 连接，复用该池探测，避免重复拨号。
+	if pg, ok := repo.(*meeting.PGStore); ok {
+		readiness.Ping = pg.Ping
+	}
+	r.GET("/readyz", ready.HandleReadyz(readiness))
 	var mediaSigner meeting.MediaURLSigner
 	if blobs != nil && blobs.Enabled() {
 		mediaSigner = blobs
@@ -155,6 +162,7 @@ func main() {
 		breakGlass,
 		guestVerifier,
 		mediaSigner,
+		readiness,
 	)
 	// 企业下发桌面端 spool 密钥（PoC：读环境变量；生产应走设备注册 + 轮换）。
 	r.GET("/v1/device/spool-key", identity.EmployeeAuth(cfg.EmployeeJWTSecret), func(c *gin.Context) {
