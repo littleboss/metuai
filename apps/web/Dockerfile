@@ -6,12 +6,8 @@ WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
-# Vite + Tailwind v4 (@tailwindcss/vite); CSS lives under src/. Include any
-# future tailwind/postcss config files at the app root.
-COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json ./
-COPY *.css ./
-COPY public ./public
-COPY src ./src
+# No apps/web/public; CSS lives under src/. Copy the app tree after deps.
+COPY . .
 RUN pnpm build
 
 FROM nginx:1.27-alpine
