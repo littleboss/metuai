@@ -2,11 +2,45 @@ package identity
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// IssueEmployeeToken 签发与 ParseEmployeeToken 兼容的员工 JWT。
+// hmacSecret 为空时返回错误（调用方应先做 503 fail-closed）。
+func IssueEmployeeToken(p Principal, hmacSecret []byte, ttl time.Duration) (string, error) {
+	if len(hmacSecret) == 0 {
+		return "", fmt.Errorf("employee jwt secret not configured")
+	}
+	if p.UserID == "" {
+		return "", fmt.Errorf("missing sub")
+	}
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	claims := jwt.MapClaims{
+		"sub":          p.UserID,
+		"kind":         KindEmployee,
+		"email":        p.Email,
+		"display_name": p.DisplayName,
+		"exp":          time.Now().Add(ttl).Unix(),
+	}
+	if len(p.Roles) > 0 {
+		roles := make([]any, 0, len(p.Roles))
+		for _, r := range p.Roles {
+			roles = append(roles, r)
+		}
+		claims["roles"] = roles
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return tok.SignedString(hmacSecret)
+}
+
 func ParseEmployeeToken(tokenString string, hmacSecret []byte) (Principal, error) {
+	if len(hmacSecret) == 0 {
+		return Principal{}, fmt.Errorf("employee jwt secret not configured")
+	}
 	parsed, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
 		if t.Method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("unexpected signing method")

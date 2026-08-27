@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"metuai/services/gateway/internal/egress"
@@ -11,6 +12,7 @@ import (
 )
 
 func TestRunFakePipelineProducesTranscriptAndSummary(t *testing.T) {
+	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
 	r, store, secretEmp, _ := testRouter(t)
 	emp := employeeJWT(t, secretEmp)
 	id, _ := createMeeting(t, r, emp)
@@ -68,6 +70,7 @@ func TestRunFakePipelineProducesTranscriptAndSummary(t *testing.T) {
 // 接线 Egress 后，媒体不再只有 pending 一种非 ready 状态：
 // 真实录制留下的 started / failed 也必须被假流水线推进，否则 PoC 会卡在 MEDIA_READY。
 func TestRunFakePipelinePromotesStartedAndFailedMedia(t *testing.T) {
+	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	for _, a := range []MediaArtifact{
@@ -103,6 +106,7 @@ func TestRunFakePipelinePromotesStartedAndFailedMedia(t *testing.T) {
 }
 
 func TestRunFakePipelineMarksLocalFallbackWhenLocalMicReady(t *testing.T) {
+	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	if _, err := s.AddMediaArtifact(MediaArtifact{
@@ -136,6 +140,7 @@ func TestRunFakePipelineMarksLocalFallbackWhenLocalMicReady(t *testing.T) {
 }
 
 func TestRunFakePipelineIndexesIntoKnowledge(t *testing.T) {
+	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	if err := s.End(id); err != nil {
@@ -145,7 +150,7 @@ func TestRunFakePipelineIndexesIntoKnowledge(t *testing.T) {
 	if _, err := RunFakePipeline(s, id, idx); err != nil {
 		t.Fatal(err)
 	}
-	hits, err := idx.Search(context.Background(), "假纪要", "u-1", "", knowledge.SearchOpts{})
+	hits, err := idx.Search(context.Background(), "转写摘要", "u-1", "", knowledge.SearchOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +171,7 @@ func TestRunFakePipelineIndexesIntoKnowledge(t *testing.T) {
 }
 
 func TestRunFakePipelineBindsOrganizerAndCitesSegments(t *testing.T) {
+	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	if err := s.MarkMemberJoined(id, "u-1", "Alice"); err != nil {
@@ -188,11 +194,14 @@ func TestRunFakePipelineBindsOrganizerAndCitesSegments(t *testing.T) {
 	if !ok {
 		t.Fatal("summary missing")
 	}
-	if len(sum.Decisions) == 0 || len(sum.Decisions[0].SourceSegmentIDs) == 0 {
-		t.Fatalf("expected cited decisions, got %+v", sum)
+	if strings.TrimSpace(sum.Summary) == "" {
+		t.Fatal("expected non-empty summary grounded in transcript")
 	}
-	if len(sum.ActionItems) == 0 || sum.ActionItems[0].OwnerUserID != "u-1" {
-		t.Fatalf("expected internal owner, got %+v", sum.ActionItems)
+	if len(sum.ActionItems) == 0 || strings.TrimSpace(sum.ActionItems[0].Task) == "" {
+		t.Fatalf("expected action_items[].task, got %+v", sum.ActionItems)
+	}
+	if len(sum.ActionItems[0].SourceSegmentIDs) == 0 {
+		t.Fatalf("expected grounded source_segment_ids, got %+v", sum.ActionItems)
 	}
 	if sum.OriginalJSON == "" {
 		t.Fatal("expected AI original snapshot")

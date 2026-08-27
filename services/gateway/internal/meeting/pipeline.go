@@ -94,10 +94,15 @@ func RunFakePipeline(repo Repository, meetingID string, idx knowledge.Indexer) (
 	if err := setStage(StageExtractingArtifacts); err != nil {
 		return "", err
 	}
-	summary := buildFakeSummary(meetingID, current.Title, current.OrganizerID, segments, chats)
-	if err := repo.UpsertSummary(summary); err != nil {
-		_ = repo.SetPipelineStage(meetingID, StageRetryableError)
-		return "", err
+	// P0：不再调用 buildFakeSummary 发明人名/待办。纪要走 EnsureNotesAvailable（无转写 422 / 未配私有 LLM 503）。
+	if _, err := EnsureNotesAvailable(context.Background(), repo, meetingID); err != nil {
+		_ = repo.AppendAudit(AuditEvent{
+			MeetingID: meetingID,
+			ActorKey:  "system:worker",
+			Action:    "notes_skipped",
+			Detail:    err.Error(),
+		})
+		return StageTranscriptReady, err
 	}
 
 	// INDEXING：写入知识检索副本（ACL 在索引侧过滤）。

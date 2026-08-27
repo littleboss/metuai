@@ -9,7 +9,7 @@ COMPOSE="$ROOT/infra/compose"
 echo "== 0) egress stack =="
 bash "$ROOT/scripts/check-egress-stack.sh"
 
-echo "== 1) gateway healthz =="
+echo "== 1) gateway healthz + readyz =="
 if ! curl -sf "$GW/healthz" >/tmp/metuai-healthz.json; then
   echo "FAIL: gateway not reachable at $GW"
   echo "hint: set -a; source infra/compose/.env.example; set +a; cd services/gateway && go run ./cmd/gateway"
@@ -17,9 +17,19 @@ if ! curl -sf "$GW/healthz" >/tmp/metuai-healthz.json; then
 fi
 cat /tmp/metuai-healthz.json
 echo
+if ! curl -sf "$GW/readyz" >/tmp/metuai-readyz.json; then
+  echo "FAIL: gateway not ready (GET /readyz). Ensure EMPLOYEE_JWT_SECRET, GUEST_JWT_SECRET, DATABASE_URL are set."
+  cat /tmp/metuai-readyz.json 2>/dev/null || true
+  exit 1
+fi
+cat /tmp/metuai-readyz.json
+echo
 
-echo "== 2) employee token =="
-TOKEN="$(cd "$ROOT/services/gateway" && go run ./cmd/devtoken)"
+echo "== 2) register employee =="
+SMOKE_EMAIL="smoke_$(date +%s)@corp.local"
+REG="$(curl -sf -X POST "$GW/v1/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$SMOKE_EMAIL\",\"password\":\"password1\",\"display_name\":\"Smoke\"}")"
+TOKEN="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<<"$REG")"
 AUTH="Authorization: Bearer $TOKEN"
 
 echo "== 3) create meeting =="

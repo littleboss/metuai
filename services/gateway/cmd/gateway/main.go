@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"metuai/services/gateway/internal/auth"
 	"metuai/services/gateway/internal/config"
 	"metuai/services/gateway/internal/egress"
 	"metuai/services/gateway/internal/identity"
 	"metuai/services/gateway/internal/knowledge"
 	lktoken "metuai/services/gateway/internal/livekit"
 	"metuai/services/gateway/internal/meeting"
+	"metuai/services/gateway/internal/ready"
 	"metuai/services/gateway/internal/upload"
 )
 
@@ -23,14 +25,23 @@ func main() {
 	cfg := config.FromEnv()
 
 	var repo meeting.Repository
+	var users auth.UserStore
 	if cfg.DatabaseURL != "" {
 		pgStore, err := meeting.NewPGStore(context.Background(), cfg.DatabaseURL)
 		if err != nil {
 			log.Fatal(err)
 		}
 		repo = pgStore
+		userStore, err := auth.NewPGStoreFromPool(context.Background(), pgStore.Pool())
+		if err != nil {
+			log.Fatal(err)
+		}
+		users = userStore
+		log.Printf("auth user store: postgres")
 	} else {
 		repo = meeting.NewMemoryStore()
+		users = auth.NewMemoryStore()
+		log.Printf("auth user store: memory")
 	}
 
 	uploadRoot := os.Getenv("UPLOAD_SPOOL_DIR")
@@ -136,6 +147,13 @@ func main() {
 			"break_glass":        bgBackend,
 		})
 	})
+	readiness := ready.FromEnv()
+	// 若 main 已成功用 DATABASE_URL 建了 PG 连接，复用该池探测，避免重复拨号。
+	if pg, ok := repo.(*meeting.PGStore); ok {
+		readiness.Ping = pg.Ping
+	}
+	r.GET("/readyz", ready.HandleReadyz(readiness))
+	auth.RegisterRoutes(r, users, cfg.EmployeeJWTSecret)
 	var mediaSigner meeting.MediaURLSigner
 	if blobs != nil && blobs.Enabled() {
 		mediaSigner = blobs
@@ -155,6 +173,7 @@ func main() {
 		breakGlass,
 		guestVerifier,
 		mediaSigner,
+		readiness,
 	)
 	// 企业下发桌面端 spool 密钥（PoC：读环境变量；生产应走设备注册 + 轮换）。
 	r.GET("/v1/device/spool-key", identity.EmployeeAuth(cfg.EmployeeJWTSecret), func(c *gin.Context) {

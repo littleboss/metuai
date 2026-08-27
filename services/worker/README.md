@@ -16,7 +16,10 @@
 
 ```bash
 export GATEWAY_URL=http://127.0.0.1:18080
-export EMPLOYEE_JWT="$(cd ../../services/gateway && go run ./cmd/devtoken)"
+# POST /v1/auth/login 获取员工 JWT
+export EMPLOYEE_JWT="$(curl -sf -X POST "$GATEWAY_URL/v1/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@corp.local","password":"your-password"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
 cd services/worker
 
 # 假流水线（纪要+转写全假）
