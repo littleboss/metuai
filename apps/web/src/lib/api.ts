@@ -68,12 +68,16 @@ export type AuthTokens = {
 export async function registerAccount(
   email: string,
   password: string,
-  name?: string,
+  displayName?: string,
 ): Promise<AuthTokens> {
   const response = await fetch('/v1/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...metuaiClientHeaders() },
-    body: JSON.stringify({ email, password, name: name || undefined }),
+    body: JSON.stringify({
+      email,
+      password,
+      display_name: displayName || undefined,
+    }),
   })
   await assertOk(response)
   return response.json() as Promise<AuthTokens>

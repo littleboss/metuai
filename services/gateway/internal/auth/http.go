@@ -15,9 +15,9 @@ import (
 const minPasswordLen = 8
 
 type registerBody struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Name     string `json:"name"`
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	DisplayName string `json:"display_name"`
 }
 
 type loginBody struct {
@@ -55,9 +55,9 @@ func RegisterRoutes(r *gin.Engine, users UserStore, employeeSecret []byte) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "hash_failed", "message": "could not hash password"})
 			return
 		}
-		user, err := users.CreateUser(email, hash, body.Name)
+		user, err := users.CreateUser(email, hash, body.DisplayName)
 		if errors.Is(err, ErrDuplicateEmail) {
-			c.JSON(http.StatusConflict, gin.H{"error": "email_already_registered", "message": "email already registered"})
+			c.JSON(http.StatusConflict, gin.H{"error": "email_taken", "message": "email already registered"})
 			return
 		}
 		if err != nil {

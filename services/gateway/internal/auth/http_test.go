@@ -45,7 +45,7 @@ func TestRegisterLoginHappyPathAndCreateMeeting(t *testing.T) {
 	r, _ := testAuthRouter(t, secret)
 
 	reg := doJSON(t, r, http.MethodPost, "/v1/auth/register", "",
-		`{"email":"alice@corp.local","password":"password1","name":"Alice"}`)
+		`{"email":"alice@corp.local","password":"password1","display_name":"Alice"}`)
 	if reg.Code != http.StatusCreated {
 		t.Fatalf("register %d %s", reg.Code, reg.Body.String())
 	}
@@ -95,6 +95,13 @@ func TestRegisterDuplicateEmail409(t *testing.T) {
 	if second.Code != http.StatusConflict {
 		t.Fatalf("dup want 409 got %d %s", second.Code, second.Body.String())
 	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(second.Body.Bytes(), &body)
+	if body.Error != "email_taken" {
+		t.Fatalf("want email_taken got %q", body.Error)
+	}
 }
 
 func TestRegisterPasswordTooShort400(t *testing.T) {
@@ -109,7 +116,7 @@ func TestRegisterPasswordTooShort400(t *testing.T) {
 		Message string `json:"message"`
 	}
 	_ = json.Unmarshal(got.Body.Bytes(), &body)
-	if body.Error == "" || body.Message == "" {
+	if body.Error != "password_too_short" || body.Message == "" {
 		t.Fatalf("body %+v", body)
 	}
 }

@@ -16,7 +16,7 @@ type JoinGatePageProps = {
 /**
  * 入会门：显示名 → 房间密码 → 录音确认勾选。
  * 未勾选禁用加入；错误密码展示 403 invalid_password；未确认录音不得进入网格。
- * 员工模式依赖已登录会话（register/login 由 Nexus 契约接入）；不在此粘贴 JWT。
+ * 员工模式依赖已登录会话（/v1/auth/login|register）；无会话时展示 AuthPage。
  */
 export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
   const [displayName, setDisplayName] = useState('')

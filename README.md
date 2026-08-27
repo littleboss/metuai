@@ -89,19 +89,9 @@ go run ./cmd/gateway
 
 `EMPLOYEE_JWT_SECRET` / `GUEST_JWT_SECRET` **没有代码内默认值**。未设置时 `GET /readyz` 返回 503，建会/嘉宾会话/LiveKit 令牌失败关闭。本地请先 `source infra/compose/.env.example`。
 
-员工 **register / login** 走 `POST /v1/auth/register` 与 `POST /v1/auth/login`，返回 `{access_token}`（员工 JWT）。Web `AuthPage` 为邮箱+密码，不再粘贴 JWT。
+员工 **register / login** 走 `POST /v1/auth/register` 与 `POST /v1/auth/login`，返回 `{access_token}`（员工 JWT，由 `EMPLOYEE_JWT_SECRET` 签名）。Web 仅邮箱+密码。
 
-### 3. 可选：开发令牌（联调辅助，非产品登录路径）
-
-```bash
-set -a && source infra/compose/.env.example && set +a
-cd services/gateway
-go run ./cmd/devtoken
-```
-
-`EMPLOYEE_JWT_SECRET` 必须已设置，且与网关一致。
-
-### 4. 启动网页
+### 3. 启动网页
 
 ```bash
 cd apps/web

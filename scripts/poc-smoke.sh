@@ -25,15 +25,11 @@ fi
 cat /tmp/metuai-readyz.json
 echo
 
-echo "== 2) employee token =="
-# 必须与网关共享显式 EMPLOYEE_JWT_SECRET（无代码内默认值）。
-if [[ -z "${EMPLOYEE_JWT_SECRET:-}" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$COMPOSE/.env.example"
-  set +a
-fi
-TOKEN="$(cd "$ROOT/services/gateway" && go run ./cmd/devtoken)"
+echo "== 2) register employee =="
+SMOKE_EMAIL="smoke_$(date +%s)@corp.local"
+REG="$(curl -sf -X POST "$GW/v1/auth/register" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$SMOKE_EMAIL\",\"password\":\"password1\",\"display_name\":\"Smoke\"}")"
+TOKEN="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<<"$REG")"
 AUTH="Authorization: Bearer $TOKEN"
 
 echo "== 3) create meeting =="
