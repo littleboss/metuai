@@ -17,6 +17,11 @@ type PGStore struct {
 	pool *pgxpool.Pool
 }
 
+// Pool 供同库模块（如 auth.users）复用连接池。
+func (s *PGStore) Pool() *pgxpool.Pool {
+	return s.pool
+}
+
 func NewPGStore(ctx context.Context, dsn string) (*PGStore, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -203,6 +208,11 @@ CREATE TABLE IF NOT EXISTS meeting_guest_presence (
 	}
 	_, _ = pool.Exec(ctx, breakGlassSchema)
 	return &PGStore{pool: pool}, nil
+}
+
+// Ping 供 /readyz 复用已建立的连接池。
+func (s *PGStore) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
 }
 
 func (s *PGStore) Create(title, organizerID, plainPassword string) (Meeting, string, error) {

@@ -61,6 +61,45 @@ function authHeaders(token: string, json = false): HeadersInit {
   return headers
 }
 
+export type AuthUser = {
+  id: string
+  email: string
+  display_name: string
+}
+
+export type AuthTokens = {
+  access_token: string
+  user: AuthUser
+}
+
+export async function registerAccount(
+  email: string,
+  password: string,
+  displayName?: string,
+): Promise<AuthTokens> {
+  const response = await fetch('/v1/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...metuaiClientHeaders() },
+    body: JSON.stringify({
+      email,
+      password,
+      display_name: displayName || undefined,
+    }),
+  })
+  await assertOk(response)
+  return response.json() as Promise<AuthTokens>
+}
+
+export async function loginAccount(email: string, password: string): Promise<AuthTokens> {
+  const response = await fetch('/v1/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...metuaiClientHeaders() },
+    body: JSON.stringify({ email, password }),
+  })
+  await assertOk(response)
+  return response.json() as Promise<AuthTokens>
+}
+
 export async function createMeeting(
   employeeToken: string,
   title: string,
@@ -223,6 +262,24 @@ export async function leaveMeeting(meetingId: string, token: string): Promise<vo
     headers: authHeaders(token),
   })
   await assertOk(response)
+}
+
+export type MeetingInfo = {
+  id: string
+  title: string
+  organizer_id: string
+  locked: boolean
+  ended: boolean
+  pipeline_stage: string
+}
+
+export async function getMeeting(meetingId: string, token: string): Promise<MeetingInfo> {
+  const response = await fetch(`/v1/meetings/${meetingId}`, {
+    method: 'GET',
+    headers: authHeaders(token),
+  })
+  await assertOk(response)
+  return response.json() as Promise<MeetingInfo>
 }
 
 export async function ackRecording(

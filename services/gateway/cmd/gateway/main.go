@@ -10,28 +10,21 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"metuai/services/gateway/internal/auth"
 	"metuai/services/gateway/internal/config"
 	"metuai/services/gateway/internal/egress"
 	"metuai/services/gateway/internal/identity"
 	"metuai/services/gateway/internal/knowledge"
 	lktoken "metuai/services/gateway/internal/livekit"
 	"metuai/services/gateway/internal/meeting"
+	"metuai/services/gateway/internal/ready"
 	"metuai/services/gateway/internal/upload"
 )
 
 func main() {
 	cfg := config.FromEnv()
 
-	var repo meeting.Repository
-	if cfg.DatabaseURL != "" {
-		pgStore, err := meeting.NewPGStore(context.Background(), cfg.DatabaseURL)
-		if err != nil {
-			log.Fatal(err)
-		}
-		repo = pgStore
-	} else {
-		repo = meeting.NewMemoryStore()
-	}
+	repo, users, dbPing := openStores(context.Background(), cfg.DatabaseURL)
 
 	uploadRoot := os.Getenv("UPLOAD_SPOOL_DIR")
 	if uploadRoot == "" {
@@ -136,6 +129,13 @@ func main() {
 			"break_glass":        bgBackend,
 		})
 	})
+	readiness := ready.FromEnv()
+	// 若已成功建 PG 池，复用该池探测；否则 Checker 对非空 DATABASE_URL 自行拨号（坏 DSN → 503）。
+	if dbPing != nil {
+		readiness.Ping = dbPing
+	}
+	r.GET("/readyz", ready.HandleReadyz(readiness))
+	auth.RegisterRoutes(r, users, cfg.EmployeeJWTSecret, readiness)
 	var mediaSigner meeting.MediaURLSigner
 	if blobs != nil && blobs.Enabled() {
 		mediaSigner = blobs
@@ -155,6 +155,7 @@ func main() {
 		breakGlass,
 		guestVerifier,
 		mediaSigner,
+		readiness,
 	)
 	// 企业下发桌面端 spool 密钥（PoC：读环境变量；生产应走设备注册 + 轮换）。
 	r.GET("/v1/device/spool-key", identity.EmployeeAuth(cfg.EmployeeJWTSecret), func(c *gin.Context) {

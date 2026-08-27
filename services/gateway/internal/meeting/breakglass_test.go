@@ -143,6 +143,7 @@ func TestBreakGlassHTTPFlow(t *testing.T) {
 }
 
 func TestGuestEmailIndexedForACL(t *testing.T) {
+	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	if err := s.AddGuestEmail(id, "Guest@Example.com"); err != nil {
@@ -159,7 +160,7 @@ func TestGuestEmailIndexedForACL(t *testing.T) {
 	if _, err := RunFakePipeline(s, id, idx); err != nil {
 		t.Fatal(err)
 	}
-	hits, err := idx.Search(context.Background(), "假纪要", "", "guest@example.com", knowledge.SearchOpts{
+	hits, err := idx.Search(context.Background(), "转写摘要", "", "guest@example.com", knowledge.SearchOpts{
 		AllowedMeetingIDs: []string{id},
 	})
 	if err != nil {

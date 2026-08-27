@@ -13,6 +13,7 @@ import (
 	"metuai/services/gateway/internal/identity"
 	"metuai/services/gateway/internal/knowledge"
 	lktoken "metuai/services/gateway/internal/livekit"
+	"metuai/services/gateway/internal/ready"
 )
 
 const clientHeader = "X-Metuai-Client"
@@ -75,10 +76,15 @@ func RegisterRoutes(
 	breakGlass BreakGlass,
 	guestVerifier *GuestEmailVerifier,
 	mediaSigner MediaURLSigner,
+	readiness *ready.Checker,
 ) {
 	registerPipelineTaskRoutes(r, repo, employeeSecret)
+	if readiness == nil {
+		readiness = ready.AlwaysReady()
+	}
+	mustReady := ready.Gate(readiness)
 
-	r.POST("/v1/meetings", identity.EmployeeAuth(employeeSecret), func(c *gin.Context) {
+	r.POST("/v1/meetings", mustReady, identity.EmployeeAuth(employeeSecret), func(c *gin.Context) {
 		var body createBody
 		_ = c.ShouldBindJSON(&body)
 		principal := identity.MustPrincipal(c)
@@ -181,29 +187,30 @@ func RegisterRoutes(
 		})
 	})
 
-	r.POST("/v1/meetings/:id/guest-session", func(c *gin.Context) {
+	r.POST("/v1/meetings/:id/guest-session", mustReady, func(c *gin.Context) {
 		meetingID := c.Param("id")
 		currentMeeting, ok := repo.Get(meetingID)
 		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found", "message": "unknown meeting"})
 			return
 		}
 		if currentMeeting.Ended {
-			c.JSON(http.StatusForbidden, gin.H{"error": "meeting_ended"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "meeting_ended", "message": "meeting has ended"})
 			return
 		}
 		if currentMeeting.Locked {
-			c.JSON(http.StatusForbidden, gin.H{"error": "meeting_locked"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "meeting_locked", "message": "meeting is locked"})
 			return
 		}
 
 		var body guestBody
 		if err := c.ShouldBindJSON(&body); err != nil || body.Password == "" || body.DisplayName == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "password and display_name required"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "password and display_name required", "message": "password and display_name required"})
 			return
 		}
 		if !repo.CheckPassword(meetingID, body.Password) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "invalid_password"})
+			// 错误体不得泄露会议字段（标题、组织者等）。
+			c.JSON(http.StatusForbidden, gin.H{"error": "invalid_password", "message": "invalid meeting password"})
 			return
 		}
 
@@ -485,15 +492,15 @@ func RegisterRoutes(
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
-	r.POST("/v1/meetings/:id/livekit-token", auth, func(c *gin.Context) {
+	r.POST("/v1/meetings/:id/livekit-token", mustReady, auth, func(c *gin.Context) {
 		meetingID := c.Param("id")
 		currentMeeting, ok := repo.Get(meetingID)
 		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found", "message": "unknown meeting"})
 			return
 		}
 		if currentMeeting.Ended {
-			c.JSON(http.StatusForbidden, gin.H{"error": "meeting_ended"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "meeting_ended", "message": "meeting has ended"})
 			return
 		}
 		principal := identity.MustPrincipal(c)
@@ -610,14 +617,16 @@ func RegisterRoutes(
 		meetingID := c.Param("id")
 		current, ok := repo.Get(meetingID)
 		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found", "message": "unknown meeting"})
 			return
 		}
+		// 组织者与共同组织者可结束；其他员工 403；无员工令牌由 employeeAuth 返回 401。
+		// 错误体不得泄露会议标题等字段。
 		if !requireOrganizer(c, repo, current) {
 			return
 		}
 		if err := repo.End(meetingID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "end_failed", "message": "failed to end meeting"})
 			return
 		}
 		// 收尾服务端录制：停止 Egress 并按真实终态更新媒体状态。
@@ -891,16 +900,16 @@ func RegisterRoutes(
 		c.JSON(http.StatusOK, gin.H{"events": items})
 	})
 
-	// 会后假流水线：组织者或员工可触发；Worker 也可带员工 JWT 调用。
+	// 会后假流水线：仍可推进媒体/转写演示；纪要改为 EnsureNotesAvailable（无转写 422 / 未配私有 LLM 503）。
 	r.POST("/v1/meetings/:id/pipeline/run-fake", employeeAuth, func(c *gin.Context) {
 		meetingID := c.Param("id")
 		current, ok := repo.Get(meetingID)
 		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found", "message": "unknown meeting"})
 			return
 		}
 		if !current.Ended {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "meeting_not_ended"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "meeting_not_ended", "message": "meeting has not ended"})
 			return
 		}
 		if !requireOrganizer(c, repo, current) {
@@ -908,7 +917,11 @@ func RegisterRoutes(
 		}
 		stage, err := RunFakePipeline(repo, meetingID, knowledgeIdx)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "stage": current.PipelineStage})
+			if errors.Is(err, ErrNoTranscript) || errors.Is(err, ErrAINotConfigured) {
+				writeNotesError(c, err)
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "pipeline_failed", "message": "pipeline failed", "pipeline_stage": stage})
 			return
 		}
 		CompleteOpenPipelineTasks(repo, meetingID, PipelineKindFake)
@@ -1081,17 +1094,17 @@ func RegisterRoutes(
 		meetingID := c.Param("id")
 		current, ok := repo.Get(meetingID)
 		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found", "message": "unknown meeting"})
 			return
 		}
 		principal := identity.MustPrincipal(c)
 		if !canAccessMeetingArtifacts(principal, current, repo, breakGlass) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden", "message": "forbidden"})
 			return
 		}
-		sum, ok := repo.GetSummary(meetingID)
-		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "summary_not_ready"})
+		sum, err := EnsureNotesAvailable(c.Request.Context(), repo, meetingID)
+		if err != nil {
+			writeNotesError(c, err)
 			return
 		}
 		recordArtifactView(repo, meetingID, PrincipalKey(principal.Kind, principal.UserID, principal.GuestID), "summary")
@@ -1591,7 +1604,8 @@ func isMeetingManager(repo Repository, current Meeting, userID string) bool {
 func requireOrganizer(c *gin.Context, repo Repository, current Meeting) bool {
 	principal := identity.MustPrincipal(c)
 	if principal.Kind != identity.KindEmployee || !isMeetingManager(repo, current, principal.UserID) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "organizer_required"})
+		// 不泄露会议标题、组织者 ID 等字段。
+		c.JSON(http.StatusForbidden, gin.H{"error": "organizer_required", "message": "organizer or co-organizer required"})
 		return false
 	}
 	return true

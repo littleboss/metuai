@@ -3,7 +3,8 @@
 用法::
 
     export GATEWAY_URL=http://127.0.0.1:18080
-    export EMPLOYEE_JWT="$(cd ../../services/gateway && go run ./cmd/devtoken)"
+    # 通过 POST /v1/auth/login 获取员工 JWT
+    export EMPLOYEE_JWT=...
 
     # 假流水线（整条到 READY）
     python -m worker.main --mode fake --meeting mtg_xxx --once
