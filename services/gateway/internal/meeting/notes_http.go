@@ -20,6 +20,21 @@ func writeNotesError(c *gin.Context, err error) {
 			"error":   "AI_NOT_CONFIGURED",
 			"message": "private LLM is not configured; meetings still work",
 		})
+	case errors.Is(err, ErrSummaryNotReady):
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":   "summary_not_ready",
+			"message": "meeting summary is not ready yet",
+		})
+	case errors.Is(err, ErrOwnerMustBeInternal):
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "owner_must_be_internal",
+			"message": "action item owner must be an internal user of this meeting",
+		})
+	case errors.Is(err, ErrMeetingNotEnded):
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "meeting_not_ended",
+			"message": "meeting has not ended",
+		})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "notes_failed",

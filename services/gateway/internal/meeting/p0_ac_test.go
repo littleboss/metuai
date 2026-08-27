@@ -164,7 +164,7 @@ func TestAC2_FailClosedWhenNotReady(t *testing.T) {
 	}
 }
 
-// AC3: 无转写 → 422 no_transcript，不发明待办。
+// AC3: 无转写 → POST generate 422 no_transcript；GET 保持 404 summary_not_ready；不发明待办。
 func TestAC3_SummaryNoTranscript(t *testing.T) {
 	r, store, secretEmp, _ := testRouter(t)
 	emp := employeeJWT(t, secretEmp)
@@ -173,26 +173,43 @@ func TestAC3_SummaryNoTranscript(t *testing.T) {
 		t.Fatalf("end %d %s", end.Code, end.Body.String())
 	}
 	got := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", emp, "")
-	if got.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("want 422 got %d %s", got.Code, got.Body.String())
+	if got.Code != http.StatusNotFound {
+		t.Fatalf("GET want 404 summary_not_ready got %d %s", got.Code, got.Body.String())
+	}
+	var getBody struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(got.Body.Bytes(), &getBody)
+	if getBody.Error != "summary_not_ready" {
+		t.Fatalf("GET body %+v", getBody)
+	}
+
+	gen := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/summary/generate", emp, "")
+	if gen.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("generate want 422 got %d %s", gen.Code, gen.Body.String())
 	}
 	var body struct {
 		Error   string `json:"error"`
 		Message string `json:"message"`
 	}
-	_ = json.Unmarshal(got.Body.Bytes(), &body)
+	_ = json.Unmarshal(gen.Body.Bytes(), &body)
 	if body.Error != "no_transcript" {
 		t.Fatalf("body %+v", body)
 	}
 	if _, ok := store.GetSummary(id); ok {
 		t.Fatal("must not invent summary")
 	}
+	// generate 失败后 GET 仍为 404
+	got2 := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", emp, "")
+	if got2.Code != http.StatusNotFound {
+		t.Fatalf("GET after failed generate want 404 got %d", got2.Code)
+	}
 }
 
-// AC4: 有转写但未配置私有 LLM → 503 AI_NOT_CONFIGURED；会议其它能力不受影响。
+// AC4: 有转写但未配置私有 LLM → generate 503 AI_NOT_CONFIGURED；会议其它能力不受影响。
 func TestAC4_SummaryAINotConfigured(t *testing.T) {
 	r, store, secretEmp, _ := testRouter(t)
-	t.Setenv("PRIVATE_LLM_URL", "")
+	t.Setenv("LLM_BASE_URL", "")
 	emp := employeeJWT(t, secretEmp)
 	id, _ := createMeeting(t, r, emp)
 	if end := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/end", emp, ""); end.Code != http.StatusOK {
@@ -203,7 +220,7 @@ func TestAC4_SummaryAINotConfigured(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	got := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", emp, "")
+	got := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/summary/generate", emp, "")
 	if got.Code != http.StatusServiceUnavailable {
 		t.Fatalf("want 503 got %d %s", got.Code, got.Body.String())
 	}
@@ -221,9 +238,8 @@ func TestAC4_SummaryAINotConfigured(t *testing.T) {
 	}
 }
 
-// AC4b: 有转写且配置了私有 LLM → summary 非空且 action_items[].task 必填。
+// AC4b: 有转写且配置了私有 LLM → generate 200，GET summary 非空且 action_items 为数组。
 func TestAC4b_SummaryFromTranscriptWhenPrivateLLMConfigured(t *testing.T) {
-	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
 	r, store, secretEmp, _ := testRouter(t)
 	emp := employeeJWT(t, secretEmp)
 	id, _ := createMeeting(t, r, emp)
@@ -234,6 +250,10 @@ func TestAC4b_SummaryFromTranscriptWhenPrivateLLMConfigured(t *testing.T) {
 		MeetingID: id, ID: "seg-1", Text: "下周交付 PoC", SpeakerDisplayName: "Alice",
 	}}); err != nil {
 		t.Fatal(err)
+	}
+	gen := doJSON(t, r, http.MethodPost, "/v1/meetings/"+id+"/summary/generate", emp, "")
+	if gen.Code != http.StatusOK {
+		t.Fatalf("generate want 200 got %d %s", gen.Code, gen.Body.String())
 	}
 	got := doJSON(t, r, http.MethodGet, "/v1/meetings/"+id+"/summary", emp, "")
 	if got.Code != http.StatusOK {
@@ -246,13 +266,19 @@ func TestAC4b_SummaryFromTranscriptWhenPrivateLLMConfigured(t *testing.T) {
 	if strings.TrimSpace(sum.Summary) == "" {
 		t.Fatal("summary must be non-empty")
 	}
-	if len(sum.ActionItems) == 0 {
-		t.Fatal("expected grounded action items from transcript")
+	if sum.ActionItems == nil {
+		t.Fatal("action_items must be an array")
 	}
 	for _, item := range sum.ActionItems {
 		if strings.TrimSpace(item.Task) == "" {
 			t.Fatal("action_items[].task required")
 		}
+	}
+	if sum.OriginalJSON == "" {
+		t.Fatal("original_json must be stored")
+	}
+	if sum.Model == "" {
+		t.Fatal("model must be recorded")
 	}
 }
 

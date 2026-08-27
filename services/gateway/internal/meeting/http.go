@@ -911,7 +911,7 @@ func RegisterRoutes(
 		c.JSON(http.StatusOK, gin.H{"events": items})
 	})
 
-	// 会后假流水线：仍可推进媒体/转写演示；纪要改为 EnsureNotesAvailable（无转写 422 / 未配私有 LLM 503）。
+	// P1：假流水线推进媒体/转写；纪要走 EnsureNotesAvailable → 私有 LLM（无转写 422 / 未配 LLM 503）。
 	r.POST("/v1/meetings/:id/pipeline/run-fake", employeeAuth, func(c *gin.Context) {
 		meetingID := c.Param("id")
 		current, ok := repo.Get(meetingID)
@@ -1113,12 +1113,46 @@ func RegisterRoutes(
 			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden", "message": "forbidden"})
 			return
 		}
-		sum, err := EnsureNotesAvailable(c.Request.Context(), repo, meetingID)
-		if err != nil {
+		sum, ok := repo.GetSummary(meetingID)
+		if !ok {
+			writeNotesError(c, ErrSummaryNotReady)
+			return
+		}
+		if err := validateSummaryDelivery(sum); err != nil {
 			writeNotesError(c, err)
 			return
 		}
 		recordArtifactView(repo, meetingID, PrincipalKey(principal.Kind, principal.UserID, principal.GuestID), "summary")
+		c.JSON(http.StatusOK, sum)
+	})
+
+	// 组织者/共同组织者触发私有 LLM 纪要生成（会议须已结束）。
+	r.POST("/v1/meetings/:id/summary/generate", employeeAuth, func(c *gin.Context) {
+		meetingID := c.Param("id")
+		current, ok := repo.Get(meetingID)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "meeting not found", "message": "unknown meeting"})
+			return
+		}
+		if !requireOrganizer(c, repo, current) {
+			return
+		}
+		if !current.Ended {
+			writeNotesError(c, ErrMeetingNotEnded)
+			return
+		}
+		sum, err := GenerateMeetingSummary(c.Request.Context(), repo, meetingID)
+		if err != nil {
+			writeNotesError(c, err)
+			return
+		}
+		principal := identity.MustPrincipal(c)
+		_ = repo.AppendAudit(AuditEvent{
+			MeetingID: meetingID,
+			ActorKey:  PrincipalKey(principal.Kind, principal.UserID, principal.GuestID),
+			Action:    "summary_generated",
+			Detail:    sum.Model,
+		})
 		c.JSON(http.StatusOK, sum)
 	})
 

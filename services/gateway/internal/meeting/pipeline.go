@@ -94,7 +94,7 @@ func RunFakePipeline(repo Repository, meetingID string, idx knowledge.Indexer) (
 	if err := setStage(StageExtractingArtifacts); err != nil {
 		return "", err
 	}
-	// P0：不再调用 buildFakeSummary 发明人名/待办。纪要走 EnsureNotesAvailable（无转写 422 / 未配私有 LLM 503）。
+	// P1：不再调用 buildFakeSummary。纪要走 EnsureNotesAvailable → 私有 LLM（LLM_BASE_URL）。
 	if _, err := EnsureNotesAvailable(context.Background(), repo, meetingID); err != nil {
 		_ = repo.AppendAudit(AuditEvent{
 			MeetingID: meetingID,
@@ -222,50 +222,3 @@ func buildFakeTranscript(meetingID, title, organizerID string, members []Meeting
 	return BindTranscriptSpeakers(members, organizerID, segments)
 }
 
-func buildFakeSummary(meetingID, title, organizerID string, segments []TranscriptSegment, chats []ChatMessage) MeetingSummary {
-	quoted := make([]string, 0, len(segments))
-	segIDs := make([]string, 0, len(segments))
-	for _, s := range segments {
-		quoted = append(quoted, s.Text)
-		if s.ID != "" {
-			segIDs = append(segIDs, s.ID)
-		}
-	}
-	body := strings.Join(quoted, " ")
-	if len(body) > 240 {
-		body = body[:240] + "…"
-	}
-	msgIDs := make([]string, 0, len(chats))
-	for _, chat := range chats {
-		if chat.ID != "" {
-			msgIDs = append(msgIDs, chat.ID)
-		}
-	}
-	actions := []ActionItem{{
-		Task:             "跟进会后假流水线切换为真实 ASR",
-		OwnerUserID:      organizerID,
-		SourceSegmentIDs: segIDs,
-	}}
-	if len(chats) > 0 {
-		actions = append(actions, ActionItem{
-			Task:             "整理会中落库聊天中的待办",
-			OwnerUserID:      organizerID,
-			SourceMessageIDs: msgIDs,
-		})
-	}
-	return MeetingSummary{
-		MeetingID: meetingID,
-		Summary:   fmt.Sprintf("【假纪要】会议「%s」已结束。内容摘要：%s", title, body),
-		Decisions: []CitedItem{
-			{Text: "采用会后处理而非实时 AI 助手", SourceSegmentIDs: segIDs},
-			{Text: "转写权威音源为 Egress 独立音轨", SourceSegmentIDs: segIDs},
-		},
-		ActionItems: actions,
-		Risks: []CitedItem{
-			{Text: "当前转写为假数据，不可用于生产决策", SourceSegmentIDs: segIDs},
-		},
-		OpenQuestions: []CitedItem{
-			{Text: "何时切换 FunASR / WhisperX 评测？", SourceSegmentIDs: segIDs},
-		},
-	}
-}

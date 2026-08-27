@@ -26,7 +26,7 @@
 |---|---|---|
 | 即时建会、自动密码、录音确认、LiveKit 入会 | **已实现（代码级）** | 网关、Web UI 和令牌测试已覆盖；房间密码已改为 bcrypt，兼容旧 SHA-256 记录。 |
 | `/readyz` 与签发失败关闭 | **已实现（代码级）** | `EMPLOYEE_JWT_SECRET` / `GUEST_JWT_SECRET` **无代码默认值**；未设置或 DB 不可达时 503 + `missing[]`。未就绪时 **auth register/login**、create / guest-session / livekit-token 均不签发。坏 `DATABASE_URL` 启动不 Fatal，进程继续听端口（`/healthz` 200）。空 `DATABASE_URL` 禁止用内存用户库冒充就绪。 |
-| 纪要不发明内容 | **已实现（P0 交付）** | 无转写 → `422 no_transcript`；未配 `PRIVATE_LLM_URL` → `503 AI_NOT_CONFIGURED`；不出站公网 LLM。有转写且私有 LLM 配置后 GET summary 要求非空 `summary` 与 `action_items[].task`。 |
+| 纪要不发明内容 | **已实现（P0/P1）** | `POST .../summary/generate`：无转写 → `422 no_transcript`；未配 `LLM_BASE_URL` → `503 AI_NOT_CONFIGURED`（不出站公网 LLM）。有转写且私有 LLM 配置后 200（或 202 后 GET 200），落库 `original_json` + `model`；非法 `owner_user_id` → `400 owner_must_be_internal`。`GET .../summary` 未就绪 → `404 summary_not_ready`。用户路径已去掉 `run-fake`。 |
 | Aura Web 壳 | **已实现（代码级）** | 单卡片 Auth（登录/注册切换，邮箱+密码+display_name）→ List → Lobby → JoinGate → MeetingStage → Notes + 401/403/503。 |
 | 本地 register/login | **已实现（代码级）** | `POST /v1/auth/register`（201）与 `/v1/auth/login`（200）签发员工 JWT；用户表 bcrypt；与 `/readyz` 同 Gate（缺密钥或 `DATABASE_URL` 未设/不可达 → 503）。 |
 | 员工必须使用 Tauri，浏览器不能开会 | **部分实现** | 有 Tauri 壳和服务端拦截，但当前只检查可伪造的 `X-Metuai-Client`，且开发默认允许 Web；没有设备注册/证明与稳定深链闭环。 |
@@ -56,7 +56,7 @@
 | PostgreSQL 保存任务权威状态 | **部分实现** | `pipeline_stage` 之外已有独立 `pipeline_tasks`（queued/leased/failed/dead），结束会议会入队；Worker `--claim` 领取 5 分钟租约，失败递增重试，超限死信并进入 `MANUAL_REVIEW`。可选 `WORKER_TOKEN` 作为回调共享密钥。仍不是 Dapr Workflow/Pub/Sub。 |
 | FunASR/WhisperX 真实转写与语言路由 | **仅适配 / 外部未验证** | 可选 FunASR import，默认 stub；没有真实权重运行或粤语/中英样本对比。语言字段在 Worker/网关用汉字/粤语常用字/拉丁字母启发式填写 `zh-CN`/`yue`/`en`，**不是** FunASR 语言识别。 |
 | 独立音轨绑定用户与显示名快照 | **部分实现** | 假流水线/ASR 会把通用 speaker 绑到 `meeting_members` 的入会显示名快照；媒体产物带 `participant_key`。嘉宾入会显示名会写入 `meeting_guest_presence`，会中验证码下拉显示名字而不是临时 ID。验证邮箱后，转写/媒体/聊天里的临时 ID 会合并为 `email:地址`，并回写该邮箱出现过的其他会议。 |
-| 结构化纪要、决策、待办、风险、来源引用 | **部分实现** | 纪要字段已对齐架构 §6.3（含 `source_segment_ids`、内部 `owner_user_id`、`completed_at`）；内部参会人可把待办标完成。仍是规则生成的假纪要，不是真实 LLM。旧字符串数组可兼容读入。 |
+| 结构化纪要、决策、待办、风险、来源引用 | **部分实现** | 纪要字段已对齐架构 §6.3；`POST /v1/meetings/:id/summary/generate` 调私有 LLM（`LLM_BASE_URL`，OpenAI 兼容）。仍缺真实 FunASR 与现场模型评测。 |
 | 内部参会人修订、嘉宾只读、保留原稿和修订事件 | **已实现（PoC）** | `PATCH /summary` 仅内部参会人；嘉宾/路人 403；AI 原稿写入 `original_json`；修订只追加 `summary_revisions`。会后页可编辑并查看原稿。 |
 | 嘉宾邮箱验证与临时身份合并 | **部分实现 / 外部未验证** | 验证码、魔法链接、**组织者会中验证码**走同一挑战（15 分钟、5 次尝试）。无 SMTP 时组织者可出示 6 位码或复制魔法链接；添加会外分享时也会把码和链接返回给组织者。确认后合并跨会临时 ID。现场 SMTP 投递仍未验收。 |
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -13,23 +12,20 @@ var (
 	ErrNoTranscript = errors.New("no_transcript")
 	// ErrAINotConfigured 表示私有 LLM 未配置；会议仍可进行，禁止出站公网 LLM。
 	ErrAINotConfigured = errors.New("AI_NOT_CONFIGURED")
+	// ErrMeetingNotEnded 表示会议尚未结束，不能生成纪要。
+	ErrMeetingNotEnded = errors.New("meeting_not_ended")
 )
 
-// PrivateLLMConfigured 仅当显式配置了私有 LLM 端点时为真。
-// 不读取公网供应商密钥；未配置时纪要接口返回 503，不得发明人名/待办。
-func PrivateLLMConfigured() bool {
-	return strings.TrimSpace(os.Getenv("PRIVATE_LLM_URL")) != ""
-}
-
-// EnsureNotesAvailable 是 P0 纪要交付：已有纪要则校验字段；否则按转写与私有 LLM 配置决定 422/503。
-// 成功时保证 summary 非空；若有 action_items，则每条 task 必填。不发明内容、不出站公网 LLM。
-func EnsureNotesAvailable(ctx context.Context, repo Repository, meetingID string) (MeetingSummary, error) {
-	_ = ctx
-	if sum, ok := repo.GetSummary(meetingID); ok {
-		if err := validateSummaryDelivery(sum); err != nil {
-			return MeetingSummary{}, err
-		}
-		return sum, nil
+// GenerateMeetingSummary 调用私有 LLM 生成纪要并落库。
+// 组织者/共同组织者经 HTTP 层校验；此处校验结束态、转写与 LLM 配置。
+// owner_user_id 非空且非本场内部用户时返回 ErrOwnerMustBeInternal。
+func GenerateMeetingSummary(ctx context.Context, repo Repository, meetingID string) (MeetingSummary, error) {
+	current, ok := repo.Get(meetingID)
+	if !ok {
+		return MeetingSummary{}, fmt.Errorf("meeting not found")
+	}
+	if !current.Ended {
+		return MeetingSummary{}, ErrMeetingNotEnded
 	}
 
 	segments, err := repo.ListTranscript(meetingID)
@@ -43,71 +39,59 @@ func EnsureNotesAvailable(ctx context.Context, repo Repository, meetingID string
 		return MeetingSummary{}, ErrAINotConfigured
 	}
 
-	current, ok := repo.Get(meetingID)
-	if !ok {
-		return MeetingSummary{}, fmt.Errorf("meeting not found")
+	owners := allowedOwnerList(repo, meetingID)
+	draft, model, err := callPrivateLLM(ctx, current, segments, owners)
+	if err != nil {
+		if errors.Is(err, ErrAINotConfigured) {
+			return MeetingSummary{}, ErrAINotConfigured
+		}
+		return MeetingSummary{}, err
 	}
-	sum := buildPrivateNotesFromTranscript(meetingID, current.Title, segments)
+	if err := validateActionOwners(repo, meetingID, draft.ActionItems); err != nil {
+		return MeetingSummary{}, err
+	}
+	draft.ActionItems = groundActionItems(draft.ActionItems, segments)
+
+	sum := MeetingSummary{
+		MeetingID:     meetingID,
+		Summary:       draft.Summary,
+		Decisions:     draft.Decisions,
+		ActionItems:   draft.ActionItems,
+		Risks:         draft.Risks,
+		OpenQuestions: draft.OpenQuestions,
+		Model:         model,
+	}
 	if err := validateSummaryDelivery(sum); err != nil {
 		return MeetingSummary{}, err
 	}
+	sum.OriginalJSON = captureOriginalJSON(sum)
 	if err := repo.UpsertSummary(sum); err != nil {
 		return MeetingSummary{}, err
 	}
-	stored, _ := repo.GetSummary(meetingID)
-	if stored.MeetingID == "" {
-		return sum, nil
+	if stored, ok := repo.GetSummary(meetingID); ok {
+		return stored, nil
 	}
-	return stored, nil
+	return sum, nil
 }
 
-// buildPrivateNotesFromTranscript 仅用已有转写文本生成纪要，不编造发言人姓名或无依据待办。
-// P0 不向公网 LLM 发请求；PRIVATE_LLM_URL 表示现场已具备私有推理能力。
-func buildPrivateNotesFromTranscript(meetingID, title string, segments []TranscriptSegment) MeetingSummary {
-	quoted := make([]string, 0, len(segments))
-	segIDs := make([]string, 0, len(segments))
-	for _, s := range segments {
-		text := strings.TrimSpace(s.Text)
-		if text == "" {
-			continue
+// EnsureNotesAvailable 保留给假流水线：已有纪要则返回；否则尝试私有 LLM 生成。
+// GET /summary 不再调用本函数（未就绪返回 404 summary_not_ready）。
+func EnsureNotesAvailable(ctx context.Context, repo Repository, meetingID string) (MeetingSummary, error) {
+	if sum, ok := repo.GetSummary(meetingID); ok {
+		if err := validateSummaryDelivery(sum); err != nil {
+			return MeetingSummary{}, err
 		}
-		quoted = append(quoted, text)
-		if s.ID != "" {
-			segIDs = append(segIDs, s.ID)
-		}
+		return sum, nil
 	}
-	body := strings.Join(quoted, " ")
-	if len(body) > 400 {
-		body = body[:400] + "…"
-	}
-	summaryText := strings.TrimSpace(fmt.Sprintf("会议「%s」转写摘要：%s", title, body))
-	if summaryText == "" {
-		summaryText = "会议转写摘要"
-	}
-	actions := []ActionItem{}
-	if len(quoted) > 0 {
-		task := "根据转写跟进：" + quoted[0]
-		if len(task) > 200 {
-			task = task[:200] + "…"
-		}
-		actions = append(actions, ActionItem{
-			Task:             task,
-			SourceSegmentIDs: segIDs,
-		})
-	}
-	return MeetingSummary{
-		MeetingID:   meetingID,
-		Summary:     summaryText,
-		Decisions:   nil,
-		ActionItems: actions,
-		Risks:       nil,
-		OpenQuestions: nil,
-	}
+	return GenerateMeetingSummary(ctx, repo, meetingID)
 }
 
 func validateSummaryDelivery(sum MeetingSummary) error {
 	if strings.TrimSpace(sum.Summary) == "" {
 		return fmt.Errorf("empty summary")
+	}
+	if sum.ActionItems == nil {
+		return fmt.Errorf("action_items required")
 	}
 	for i, item := range sum.ActionItems {
 		if strings.TrimSpace(item.Task) == "" {
@@ -115,4 +99,28 @@ func validateSummaryDelivery(sum MeetingSummary) error {
 		}
 	}
 	return nil
+}
+
+// groundActionItems 在模型未给出引用时，用本场转写片段 ID 做最小 grounding（不发明内容）。
+func groundActionItems(items []ActionItem, segments []TranscriptSegment) []ActionItem {
+	if len(items) == 0 || len(segments) == 0 {
+		return items
+	}
+	segIDs := make([]string, 0, len(segments))
+	for _, s := range segments {
+		if s.ID != "" {
+			segIDs = append(segIDs, s.ID)
+		}
+	}
+	if len(segIDs) == 0 {
+		return items
+	}
+	out := make([]ActionItem, len(items))
+	copy(out, items)
+	for i := range out {
+		if len(out[i].SourceSegmentIDs) == 0 {
+			out[i].SourceSegmentIDs = append([]string(nil), segIDs...)
+		}
+	}
+	return out
 }

@@ -143,7 +143,7 @@ func TestBreakGlassHTTPFlow(t *testing.T) {
 }
 
 func TestGuestEmailIndexedForACL(t *testing.T) {
-	t.Setenv("PRIVATE_LLM_URL", "http://127.0.0.1:9/private-llm")
+	stubPrivateLLM(t, "")
 	s := NewMemoryStore()
 	id := newMeeting(t, s)
 	if err := s.AddGuestEmail(id, "Guest@Example.com"); err != nil {
