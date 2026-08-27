@@ -29,8 +29,9 @@ export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
   if (mode === 'employee' && !employeeToken.trim()) {
     return (
       <AuthPage
-        onAuthenticated={(tok) => {
+        onAuthenticated={(tok, user) => {
           sessionStorage.setItem('employeeToken', tok)
+          sessionStorage.setItem('employeeUser', JSON.stringify(user))
           window.location.reload()
         }}
       />

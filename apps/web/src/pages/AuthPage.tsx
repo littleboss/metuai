@@ -6,7 +6,7 @@ import { SecretField, TextField } from '../aura/TextField'
 import { loginAccount, registerAccount } from '../lib/api'
 
 type AuthPageProps = {
-  onAuthenticated: (token: string) => void
+  onAuthenticated: (token: string, user: { id: string; email: string; display_name: string }) => void
 }
 
 type Mode = 'login' | 'register'
@@ -37,7 +37,8 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
           ? await registerAccount(email.trim(), password, displayName.trim() || undefined)
           : await loginAccount(email.trim(), password)
       sessionStorage.setItem('employeeToken', tokens.access_token)
-      onAuthenticated(tokens.access_token)
+      sessionStorage.setItem('employeeUser', JSON.stringify(tokens.user))
+      onAuthenticated(tokens.access_token, tokens.user)
     } catch (error) {
       setErr(parseApiError(error))
     } finally {

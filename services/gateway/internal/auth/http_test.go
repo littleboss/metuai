@@ -51,10 +51,18 @@ func TestRegisterLoginHappyPathAndCreateMeeting(t *testing.T) {
 	}
 	var regBody struct {
 		AccessToken string `json:"access_token"`
+		User        struct {
+			ID          string `json:"id"`
+			Email       string `json:"email"`
+			DisplayName string `json:"display_name"`
+		} `json:"user"`
 	}
 	_ = json.Unmarshal(reg.Body.Bytes(), &regBody)
 	if regBody.AccessToken == "" {
 		t.Fatal("missing access_token")
+	}
+	if regBody.User.ID == "" || regBody.User.Email != "alice@corp.local" || regBody.User.DisplayName != "Alice" {
+		t.Fatalf("register user payload %+v", regBody.User)
 	}
 	p, err := identity.ParseEmployeeToken(regBody.AccessToken, secret)
 	if err != nil {
@@ -71,10 +79,21 @@ func TestRegisterLoginHappyPathAndCreateMeeting(t *testing.T) {
 	}
 	var loginBody struct {
 		AccessToken string `json:"access_token"`
+		User        struct {
+			ID          string `json:"id"`
+			Email       string `json:"email"`
+			DisplayName string `json:"display_name"`
+		} `json:"user"`
 	}
 	_ = json.Unmarshal(login.Body.Bytes(), &loginBody)
 	if loginBody.AccessToken == "" {
 		t.Fatal("login missing token")
+	}
+	if loginBody.User.DisplayName != "Alice" || loginBody.User.Email != "alice@corp.local" || loginBody.User.ID == "" {
+		t.Fatalf("login user payload %+v", loginBody.User)
+	}
+	if strings.Contains(login.Body.String(), `"token"`) && !strings.Contains(login.Body.String(), `"access_token"`) {
+		t.Fatal("must use access_token field, not token")
 	}
 
 	create := doJSON(t, r, http.MethodPost, "/v1/meetings", loginBody.AccessToken, `{"title":"from-login"}`)

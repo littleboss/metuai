@@ -12,8 +12,8 @@
   --color-accent-hover: #2563eb;
   --color-danger: #ef4444;
   --color-success: #22c55e;
-  --font-sans: "IBM Plex Sans", "PingFang SC", "Noto Sans SC", sans-serif;
-  --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --radius-lg: 0.5rem;
 }
 

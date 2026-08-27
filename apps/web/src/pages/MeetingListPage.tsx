@@ -14,6 +14,7 @@ import {
 
 type MeetingListPageProps = {
   employeeToken: string
+  displayName?: string
   onLogout: () => void
   onCreated: (meeting: CreatedMeeting) => void
   onOpenMeeting: (meetingId: string) => void
@@ -21,6 +22,7 @@ type MeetingListPageProps = {
 
 export function MeetingListPage({
   employeeToken,
+  displayName,
   onLogout,
   onCreated,
   onOpenMeeting,
@@ -64,15 +66,21 @@ export function MeetingListPage({
   return (
     <AppShell
       actions={
-        <Button variant="ghost" onClick={onLogout}>
-          退出
-        </Button>
+        <div className="flex items-center gap-2">
+          {displayName ? <span className="text-sm text-secondary">{displayName}</span> : null}
+          <Button variant="ghost" onClick={onLogout}>
+            退出
+          </Button>
+        </div>
       }
     >
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="space-y-1">
           <h1 className="text-lg font-semibold tracking-tight">我的会议</h1>
-          <p className="text-sm text-secondary">创建会议后进入大厅，复制链接邀请嘉宾。</p>
+          <p className="text-sm text-secondary">
+            {displayName ? `你好，${displayName}。` : ''}
+            创建会议后进入大厅，复制链接邀请嘉宾。
+          </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
           <TextField label="标题" value={title} onChange={(e) => setTitle(e.target.value)} />

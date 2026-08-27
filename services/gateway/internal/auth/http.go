@@ -69,7 +69,7 @@ func RegisterRoutes(r *gin.Engine, users UserStore, employeeSecret []byte) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "not_ready", "message": "employee jwt secret not configured"})
 			return
 		}
-		c.JSON(http.StatusCreated, gin.H{"access_token": token})
+		c.JSON(http.StatusCreated, authSuccess(token, user))
 	})
 
 	r.POST("/v1/auth/login", func(c *gin.Context) {
@@ -101,8 +101,19 @@ func RegisterRoutes(r *gin.Engine, users UserStore, employeeSecret []byte) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "not_ready", "message": "employee jwt secret not configured"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"access_token": token})
+		c.JSON(http.StatusOK, authSuccess(token, user))
 	})
+}
+
+func authSuccess(token string, user User) gin.H {
+	return gin.H{
+		"access_token": token,
+		"user": gin.H{
+			"id":           user.ID,
+			"email":        user.Email,
+			"display_name": user.DisplayName,
+		},
+	}
 }
 
 func writeSecretUnavailable(c *gin.Context) {

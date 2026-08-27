@@ -61,8 +61,15 @@ function authHeaders(token: string, json = false): HeadersInit {
   return headers
 }
 
+export type AuthUser = {
+  id: string
+  email: string
+  display_name: string
+}
+
 export type AuthTokens = {
   access_token: string
+  user: AuthUser
 }
 
 export async function registerAccount(

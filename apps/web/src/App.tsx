@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { CreatedMeeting } from './lib/api'
+import type { AuthUser, CreatedMeeting } from './lib/api'
 import { AuthPage } from './pages/AuthPage'
 import { Error401, Error403, Error503 } from './pages/ErrorPages'
 import { JoinGatePage } from './pages/JoinGatePage'
@@ -12,12 +12,22 @@ function usePath() {
   return window.location.pathname
 }
 
+function readStoredUser(): AuthUser | null {
+  try {
+    const raw = sessionStorage.getItem('employeeUser')
+    if (!raw) return null
+    return JSON.parse(raw) as AuthUser
+  } catch {
+    return null
+  }
+}
+
 function App() {
   const path = usePath()
-  // 会话令牌由 /v1/auth/login|register 写入 sessionStorage。
   const [employeeToken, setEmployeeToken] = useState(
     () => sessionStorage.getItem('employeeToken') ?? '',
   )
+  const [employeeUser, setEmployeeUser] = useState<AuthUser | null>(() => readStoredUser())
   const [created, setCreated] = useState<CreatedMeeting | null>(null)
 
   const guestMatch = path.match(/^\/join\/([^/]+)\/?$/)
@@ -30,6 +40,11 @@ function App() {
     const raw = params.get('missing')
     return raw ? raw.split(',').filter(Boolean) : undefined
   }, [])
+
+  function handleAuthenticated(token: string, user: AuthUser) {
+    setEmployeeToken(token)
+    setEmployeeUser(user)
+  }
 
   if (path === '/error/401') return <Error401 />
   if (path === '/error/403') return <Error403 />
@@ -75,13 +90,7 @@ function App() {
   if (lobbyMatch) {
     const meetingId = decodeURIComponent(lobbyMatch[1])
     if (!employeeToken) {
-      return (
-        <AuthPage
-          onAuthenticated={(tok) => {
-            setEmployeeToken(tok)
-          }}
-        />
-      )
+      return <AuthPage onAuthenticated={handleAuthenticated} />
     }
     return (
       <LobbyPage
@@ -93,21 +102,18 @@ function App() {
   }
 
   if (!employeeToken) {
-    return (
-      <AuthPage
-        onAuthenticated={(tok) => {
-          setEmployeeToken(tok)
-        }}
-      />
-    )
+    return <AuthPage onAuthenticated={handleAuthenticated} />
   }
 
   return (
     <MeetingListPage
       employeeToken={employeeToken}
+      displayName={employeeUser?.display_name}
       onLogout={() => {
         sessionStorage.removeItem('employeeToken')
+        sessionStorage.removeItem('employeeUser')
         setEmployeeToken('')
+        setEmployeeUser(null)
       }}
       onCreated={(meeting) => {
         setCreated(meeting)
