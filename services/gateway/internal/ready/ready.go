@@ -1,5 +1,5 @@
 // Package ready 实现进程就绪检查（P0 /readyz）。
-// /healthz 只表示进程存活；/readyz 要求员工 JWT 密钥已配置且数据库可达。
+// /healthz 只表示进程存活；/readyz 要求员工/嘉宾 JWT 密钥已配置且数据库可达。
 package ready
 
 import (
@@ -26,11 +26,13 @@ type Status struct {
 	Missing []string `json:"missing,omitempty"`
 }
 
-// Checker 检查 EMPLOYEE_JWT_SECRET 是否显式配置，以及 DATABASE_URL 是否可达。
+// Checker 检查 JWT 密钥是否显式配置，以及 DATABASE_URL 是否可达。
 type Checker struct {
 	// EmployeeSecretSet 为 true 表示环境变量 EMPLOYEE_JWT_SECRET 非空。
 	EmployeeSecretSet bool
-	DatabaseURL       string
+	// GuestSecretSet 为 true 表示环境变量 GUEST_JWT_SECRET 非空。
+	GuestSecretSet bool
+	DatabaseURL    string
 	// Ping 可选；为空时若 DatabaseURL 非空则用 pgx 直连探测。
 	Ping func(ctx context.Context) error
 }
@@ -39,6 +41,7 @@ type Checker struct {
 func FromEnv() *Checker {
 	return &Checker{
 		EmployeeSecretSet: strings.TrimSpace(os.Getenv("EMPLOYEE_JWT_SECRET")) != "",
+		GuestSecretSet:    strings.TrimSpace(os.Getenv("GUEST_JWT_SECRET")) != "",
 		DatabaseURL:       strings.TrimSpace(os.Getenv("DATABASE_URL")),
 	}
 }
@@ -50,12 +53,15 @@ func (c *Checker) Check(ctx context.Context) Status {
 			Ready:   false,
 			Error:   ErrNotReady,
 			Message: MsgNotReady,
-			Missing: []string{"EMPLOYEE_JWT_SECRET", "DATABASE_URL"},
+			Missing: []string{"EMPLOYEE_JWT_SECRET", "GUEST_JWT_SECRET", "DATABASE_URL"},
 		}
 	}
-	missing := make([]string, 0, 2)
+	missing := make([]string, 0, 3)
 	if !c.EmployeeSecretSet {
 		missing = append(missing, "EMPLOYEE_JWT_SECRET")
+	}
+	if !c.GuestSecretSet {
+		missing = append(missing, "GUEST_JWT_SECRET")
 	}
 	dbURL := strings.TrimSpace(c.DatabaseURL)
 	if dbURL == "" {
@@ -116,6 +122,7 @@ func Gate(checker *Checker) gin.HandlerFunc {
 func AlwaysReady() *Checker {
 	return &Checker{
 		EmployeeSecretSet: true,
+		GuestSecretSet:    true,
 		DatabaseURL:       "memory://test",
 		Ping:              func(context.Context) error { return nil },
 	}

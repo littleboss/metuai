@@ -87,14 +87,17 @@ go run ./cmd/gateway
 
 不设置 `DATABASE_URL` 时使用内存存储；按上面 source 后会连接 compose 中的 Postgres。
 
+`EMPLOYEE_JWT_SECRET` / `GUEST_JWT_SECRET` **没有代码内默认值**。未设置时 `GET /readyz` 返回 503，建会/嘉宾会话/LiveKit 令牌失败关闭。本地请先 `source infra/compose/.env.example`。
+
 ### 3. 生成开发员工 JWT
 
 ```bash
+set -a && source infra/compose/.env.example && set +a
 cd services/gateway
 go run ./cmd/devtoken
 ```
 
-打印 24 小时有效的开发令牌。若自定义了 `EMPLOYEE_JWT_SECRET`，生成时必须一致。
+打印 24 小时有效的开发令牌。`EMPLOYEE_JWT_SECRET` 必须已设置，且与网关一致。
 
 ### 4. 启动网页
 
@@ -104,13 +107,7 @@ pnpm install
 pnpm dev
 ```
 
-打开 `http://127.0.0.1:5173`，粘贴员工 JWT 并创建会议。创建成功后：
-
-1. 复制嘉宾链接和会议密码。
-2. 员工勾选录音告知后点击「确认录音并入会」。
-3. 第二个浏览器打开嘉宾链接，输入显示名和密码。
-4. 勾选录音确认后再进房；两端应能互相看到和听到。
-5. 组织者侧栏可锁定/解锁、重置密码、踢人、全员结束；右侧「会中留言」会写入数据库。
+打开 `http://127.0.0.1:5173`，粘贴员工 JWT 并「进入」。Aura 流程：会议列表 → 创建 → 大厅（复制链接/密码）→ 入会门（录音确认）→ 会场网格 → 会后纪要。
 
 未确认录音时，`/v1/meetings/:id/livekit-token` 返回 `403` 且 `error=recording_ack_required`。  
 将 `DEV_ALLOW_EMPLOYEE_WEB=false` 后，员工浏览器入会会被拒绝（需 `X-Metuai-Client: tauri`）。

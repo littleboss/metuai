@@ -18,6 +18,7 @@ func TestAC2_ReadyzRequiresSecretAndDatabase(t *testing.T) {
 	r := gin.New()
 	r.GET("/readyz", ready.HandleReadyz(&ready.Checker{
 		EmployeeSecretSet: false,
+		GuestSecretSet:    false,
 		DatabaseURL:       "",
 	}))
 	r.GET("/healthz", func(c *gin.Context) {
@@ -61,6 +62,55 @@ func TestAC2_ReadyzRequiresSecretAndDatabase(t *testing.T) {
 	}
 }
 
+// AC9: 未设置 JWT 密钥时 /readyz=503（missing 含 EMPLOYEE_JWT_SECRET），入会 API 失败关闭。
+func TestAC9_MissingJWTSecretReadyzAndFailClosed(t *testing.T) {
+	t.Setenv("EMPLOYEE_JWT_SECRET", "")
+	t.Setenv("GUEST_JWT_SECRET", "")
+	t.Setenv("DATABASE_URL", "postgres://metuai:metuai@127.0.0.1:1/metuai?sslmode=disable")
+
+	checker := ready.FromEnv()
+	// 数据库探测用假 Ping，只验证密钥缺失语义。
+	checker.Ping = func(context.Context) error { return nil }
+	checker.DatabaseURL = "postgres://ok"
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/readyz", ready.HandleReadyz(checker))
+	store := NewMemoryStore()
+	RegisterRoutes(r, store, nil, nil, "ws://127.0.0.1:17880", "devkey", "secret", true, "metuai-media", nil, nil, NewBreakGlassStore(), NewGuestEmailVerifier(store, nil), nil, checker)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz want 503 got %d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Error   string   `json:"error"`
+		Missing []string `json:"missing"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	joined := strings.Join(body.Missing, ",")
+	if body.Error != "not_ready" || !strings.Contains(joined, "EMPLOYEE_JWT_SECRET") {
+		t.Fatalf("body %+v", body)
+	}
+	if !strings.Contains(joined, "GUEST_JWT_SECRET") {
+		t.Fatalf("missing should include GUEST_JWT_SECRET: %v", body.Missing)
+	}
+
+	create := doJSON(t, r, http.MethodPost, "/v1/meetings", "unused", `{"title":"x"}`)
+	if create.Code != http.StatusServiceUnavailable {
+		t.Fatalf("create want 503 got %d %s", create.Code, create.Body.String())
+	}
+	guest := doJSON(t, r, http.MethodPost, "/v1/meetings/m1/guest-session", "", `{"password":"p","display_name":"G"}`)
+	if guest.Code != http.StatusServiceUnavailable {
+		t.Fatalf("guest-session want 503 got %d %s", guest.Code, guest.Body.String())
+	}
+	lk := doJSON(t, r, http.MethodPost, "/v1/meetings/m1/livekit-token", "unused", `{}`)
+	if lk.Code != http.StatusServiceUnavailable {
+		t.Fatalf("livekit-token want 503 got %d %s", lk.Code, lk.Body.String())
+	}
+}
+
 // AC2b: 未就绪时建会 / 嘉宾会话 / LiveKit 令牌失败关闭。
 func TestAC2_FailClosedWhenNotReady(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -68,7 +118,7 @@ func TestAC2_FailClosedWhenNotReady(t *testing.T) {
 	secretGst := []byte("gst")
 	store := NewMemoryStore()
 	r := gin.New()
-	blocked := &ready.Checker{EmployeeSecretSet: false, DatabaseURL: ""}
+	blocked := &ready.Checker{EmployeeSecretSet: false, GuestSecretSet: false, DatabaseURL: ""}
 	RegisterRoutes(r, store, secretEmp, secretGst, "ws://127.0.0.1:17880", "devkey", "secret", true, "metuai-media", nil, nil, NewBreakGlassStore(), NewGuestEmailVerifier(store, nil), nil, blocked)
 
 	emp := employeeJWT(t, secretEmp)
@@ -226,8 +276,8 @@ func TestAC8_EndMeetingAuthorization(t *testing.T) {
 	}
 }
 
-// AC9: recording-ack 必需后才能拿 livekit-token。
-func TestAC9_RecordingAckRequiredBeforeLivekitToken(t *testing.T) {
+// RAP: recording-ack 必需后才能拿 livekit-token。
+func TestRAP_RecordingAckRequiredBeforeLivekitToken(t *testing.T) {
 	r, _, secretEmp, _ := testRouter(t)
 	emp := employeeJWT(t, secretEmp)
 	id, password := createMeeting(t, r, emp)

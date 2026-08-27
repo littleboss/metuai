@@ -9,7 +9,7 @@ COMPOSE="$ROOT/infra/compose"
 echo "== 0) egress stack =="
 bash "$ROOT/scripts/check-egress-stack.sh"
 
-echo "== 1) gateway healthz =="
+echo "== 1) gateway healthz + readyz =="
 if ! curl -sf "$GW/healthz" >/tmp/metuai-healthz.json; then
   echo "FAIL: gateway not reachable at $GW"
   echo "hint: set -a; source infra/compose/.env.example; set +a; cd services/gateway && go run ./cmd/gateway"
@@ -17,8 +17,22 @@ if ! curl -sf "$GW/healthz" >/tmp/metuai-healthz.json; then
 fi
 cat /tmp/metuai-healthz.json
 echo
+if ! curl -sf "$GW/readyz" >/tmp/metuai-readyz.json; then
+  echo "FAIL: gateway not ready (GET /readyz). Ensure EMPLOYEE_JWT_SECRET, GUEST_JWT_SECRET, DATABASE_URL are set."
+  cat /tmp/metuai-readyz.json 2>/dev/null || true
+  exit 1
+fi
+cat /tmp/metuai-readyz.json
+echo
 
 echo "== 2) employee token =="
+# 必须与网关共享显式 EMPLOYEE_JWT_SECRET（无代码内默认值）。
+if [[ -z "${EMPLOYEE_JWT_SECRET:-}" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$COMPOSE/.env.example"
+  set +a
+fi
 TOKEN="$(cd "$ROOT/services/gateway" && go run ./cmd/devtoken)"
 AUTH="Authorization: Bearer $TOKEN"
 

@@ -1,13 +1,21 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { AppShell } from '../aura/AppShell'
 import { Banner } from '../aura/Banner'
 import { parseApiError } from '../aura/parseApiError'
 import { Button } from '../aura/Button'
 import { SecretField } from '../aura/TextField'
 import { listEmployeeMeetings } from '../lib/api'
+import { Error503 } from './ErrorPages'
 
 type AuthPageProps = {
   onAuthenticated: (token: string) => void
+}
+
+type ReadyStatus = {
+  ready?: boolean
+  error?: string
+  message?: string
+  missing?: string[]
 }
 
 /** 仅粘贴企业 JWT +「进入」，无邮箱/密码本地账号。 */
@@ -15,6 +23,30 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
   const [token, setToken] = useState(() => sessionStorage.getItem('employeeToken') ?? '')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<{ error?: string; message?: string }>({})
+  const [notReady, setNotReady] = useState<ReadyStatus | null>(null)
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/readyz')
+        const body = (await res.json()) as ReadyStatus
+        if (!res.ok || body.ready === false) {
+          setNotReady(body)
+        }
+      } catch {
+        /* 开发代理未起时不挡粘贴 JWT */
+      }
+    })()
+  }, [])
+
+  if (notReady) {
+    return (
+      <Error503
+        message={notReady.message ?? '网关未就绪'}
+        missing={notReady.missing}
+      />
+    )
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -41,15 +73,15 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
 
   return (
     <AppShell title="METUAI">
-      <div className="mx-auto w-full max-w-md space-y-6">
+      <div className="mx-auto flex w-full max-w-md flex-col gap-2">
         <div className="space-y-2">
           <h1 className="text-lg font-semibold tracking-tight">员工入口</h1>
           <p className="text-sm text-secondary">
-            粘贴企业签发的员工 JWT（PoC：`go run ./cmd/devtoken`）。本系统不提供注册/登录。
+            粘贴企业签发的员工 JWT（PoC：先 source `.env.example`，再 `go run ./cmd/devtoken`）。本系统不提供注册/登录。
           </p>
         </div>
         <Banner error={err.error} message={err.message} />
-        <form className="space-y-4" onSubmit={(e) => void handleSubmit(e)}>
+        <form className="flex flex-col gap-2" onSubmit={(e) => void handleSubmit(e)}>
           <SecretField
             label="员工 JWT"
             value={token}

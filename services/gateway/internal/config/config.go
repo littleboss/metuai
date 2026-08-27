@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"metuai/services/gateway/internal/egress"
 )
@@ -41,10 +42,11 @@ type Config struct {
 
 func FromEnv() Config {
 	return Config{
-		HTTPAddr:            getenv("HTTP_ADDR", ":18080"),
-		DatabaseURL:         os.Getenv("DATABASE_URL"),
-		EmployeeJWTSecret:   []byte(getenv("EMPLOYEE_JWT_SECRET", "dev-employee-secret")),
-		GuestJWTSecret:      []byte(getenv("GUEST_JWT_SECRET", "dev-guest-secret")),
+		HTTPAddr:    getenv("HTTP_ADDR", ":18080"),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
+		// JWT 密钥禁止代码内默认值：空/未设置必须保持空，由 /readyz 与签发门闸失败关闭。
+		EmployeeJWTSecret:   []byte(strings.TrimSpace(os.Getenv("EMPLOYEE_JWT_SECRET"))),
+		GuestJWTSecret:      []byte(strings.TrimSpace(os.Getenv("GUEST_JWT_SECRET"))),
 		LiveKitURL:          getenv("LIVEKIT_URL", "ws://127.0.0.1:17880"),
 		LiveKitAPIKey:       getenv("LIVEKIT_API_KEY", "devkey"),
 		LiveKitAPISecret:    getenv("LIVEKIT_API_SECRET", "secret"),
