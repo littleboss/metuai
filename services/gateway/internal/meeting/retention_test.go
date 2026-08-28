@@ -11,7 +11,7 @@ import (
 func TestSweepRetentionSeparatesVideoMediaAndKnowledge(t *testing.T) {
 	s := NewMemoryStore()
 	idx := knowledge.NewMemoryIndex()
-	m, _, err := s.Create("retain", "u-1", "")
+	m, _, err := s.Create("retain", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

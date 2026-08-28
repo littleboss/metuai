@@ -22,7 +22,7 @@ func TestCompleteWritesLocalMicArtifact(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	secret := []byte("emp-secret")
 	repo := meeting.NewMemoryStore()
-	m, _, err := repo.Create("demo", "u-1", "")
+	m, _, err := repo.Create("demo", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestCompleteUploadsToBlobStore(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	secret := []byte("emp-secret")
 	repo := meeting.NewMemoryStore()
-	m, _, err := repo.Create("demo", "u-1", "")
+	m, _, err := repo.Create("demo", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestCompleteMarksFailedWhenBlobPutFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	secret := []byte("emp-secret")
 	repo := meeting.NewMemoryStore()
-	m, _, err := repo.Create("demo", "u-1", "")
+	m, _, err := repo.Create("demo", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestNonParticipantCannotUploadToMeeting(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	secret := []byte("emp-secret")
 	repo := meeting.NewMemoryStore()
-	m, _, err := repo.Create("private", "u-1", "")
+	m, _, err := repo.Create("private", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

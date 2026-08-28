@@ -32,7 +32,7 @@ func TestActionItemUnmarshalAcceptsLegacyString(t *testing.T) {
 
 func TestApplySummaryEditKeepsOriginalAndRejectsGuestOwner(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("修订", "u-1", "")
+	m, _, err := s.Create("修订", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestHasAuthoritativeAudioIgnoresRoomMix(t *testing.T) {
 
 func TestCompleteActionItem(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("todos", "u-1", "")
+	m, _, err := s.Create("todos", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

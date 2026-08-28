@@ -14,6 +14,8 @@ type Meeting struct {
 	LastActiveAt  time.Time
 	PipelineStage string
 	CreatedAt     time.Time
+	StartsAt      *time.Time
+	EndsAt        *time.Time
 }
 
 type MeetingMemberRole string

@@ -7,7 +7,7 @@ import (
 
 func TestEnqueueClaimRetryAndDeadLetter(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("tasks", "u-1", "password")
+	m, _, err := s.Create("tasks", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,11 +73,11 @@ func TestEnqueueClaimRetryAndDeadLetter(t *testing.T) {
 
 func TestMergeGuestIdentityRewritesTranscriptAndMedia(t *testing.T) {
 	s := NewMemoryStore()
-	m1, _, err := s.Create("one", "u-1", "password")
+	m1, _, err := s.Create("one", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m2, _, err := s.Create("two", "u-1", "password")
+	m2, _, err := s.Create("two", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestMergeGuestIdentityRewritesTranscriptAndMedia(t *testing.T) {
 
 func TestListDirectoryEmployees(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("dir", "u-1", "password")
+	m, _, err := s.Create("dir", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

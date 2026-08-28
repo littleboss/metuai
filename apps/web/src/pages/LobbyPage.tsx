@@ -6,6 +6,7 @@ import { Button } from '../aura/Button'
 import { JoinCodeBlock } from '../aura/JoinCodeBlock'
 import { VideoTile } from '../aura/VideoTile'
 import { ackRecording, getMeeting, livekitToken, type CreatedMeeting } from '../lib/api'
+import { formatCountdown, hasMeetingStarted } from '../lib/meetingSchedule'
 import { startLocalRecording } from '../lib/localRecording'
 import { isTauriRuntime } from '../lib/client'
 
@@ -19,14 +20,18 @@ type LobbyPageProps = {
 export function LobbyPage({ meetingId, employeeToken, initial }: LobbyPageProps) {
   const [password] = useState(initial?.password ?? sessionStorage.getItem('roomPassword') ?? '')
   const [title, setTitle] = useState(initial?.title ?? '')
+  const [startsAt, setStartsAt] = useState<string | null>(initial?.starts_at ?? null)
   const [isOrganizer, setIsOrganizer] = useState(true)
   const [previewDenied, setPreviewDenied] = useState(false)
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<{ error?: string; message?: string }>({})
   const [linkCopied, setLinkCopied] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   const guestLink = `${window.location.origin}/join/${encodeURIComponent(meetingId)}`
+  const waitingToStart = Boolean(startsAt && !hasMeetingStarted(startsAt, nowMs))
+  const countdownText = startsAt ? formatCountdown(startsAt, nowMs) : ''
 
   useEffect(() => {
     if (initial?.password) {
@@ -37,12 +42,19 @@ export function LobbyPage({ meetingId, employeeToken, initial }: LobbyPageProps)
       try {
         const info = await getMeeting(meetingId, employeeToken)
         setTitle(info.title)
+        setStartsAt(info.starts_at ?? null)
         setIsOrganizer(info.organizer_id === parseSub(employeeToken))
       } catch {
         /* 列表进入时可能尚无详情字段 */
       }
     })()
   }, [meetingId, employeeToken, initial])
+
+  useEffect(() => {
+    if (!startsAt || hasMeetingStarted(startsAt)) return
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [startsAt])
 
   useEffect(() => {
     let active = true
@@ -73,6 +85,7 @@ export function LobbyPage({ meetingId, employeeToken, initial }: LobbyPageProps)
   }
 
   async function enterRoom() {
+    if (waitingToStart) return
     setLoading(true)
     setErr({})
     try {
@@ -94,7 +107,8 @@ export function LobbyPage({ meetingId, employeeToken, initial }: LobbyPageProps)
       if (password) sessionStorage.setItem('roomPassword', password)
       window.location.assign('/room')
     } catch (error) {
-      setErr(parseApiError(error))
+      const parsed = parseApiError(error)
+      setErr(parsed)
       setLoading(false)
     }
   }
@@ -103,10 +117,27 @@ export function LobbyPage({ meetingId, employeeToken, initial }: LobbyPageProps)
     <AppShell>
       <div className="space-y-1">
         <h1 className="text-lg font-semibold tracking-tight">{title || '会议大厅'}</h1>
-        <p className="text-sm text-secondary">确认设备后进入会场，或复制链接邀请嘉宾。</p>
+        <p className="text-sm text-secondary">
+          {waitingToStart
+            ? '会议尚未开始，可先复制链接与房间密码，到点后进入会场。'
+            : '确认设备后进入会场，或复制链接邀请嘉宾。'}
+        </p>
       </div>
 
       <Banner error={err.error} message={err.message} />
+
+      {waitingToStart && startsAt ? (
+        <div className="rounded-lg border border-border bg-elevated p-6 text-center">
+          <p className="text-sm text-secondary">距离开始还有</p>
+          <p className="mt-2 font-mono text-4xl font-semibold tracking-wide text-accent">{countdownText}</p>
+          <p className="mt-3 text-xs text-secondary">
+            {new Date(startsAt).toLocaleString(undefined, {
+              dateStyle: 'medium',
+              timeStyle: 'short',
+            })}
+          </p>
+        </div>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-3">
@@ -118,8 +149,13 @@ export function LobbyPage({ meetingId, employeeToken, initial }: LobbyPageProps)
               {linkCopied ? '已复制' : '复制链接'}
             </Button>
           </div>
-          <Button loading={loading} onClick={() => void enterRoom()} className="w-full">
-            进入会场
+          <Button
+            loading={loading}
+            disabled={waitingToStart}
+            onClick={() => void enterRoom()}
+            className="w-full"
+          >
+            {waitingToStart ? '未到开始时间' : '进入会场'}
           </Button>
         </div>
 

@@ -1,3 +1,5 @@
+export type MeetingStatus = 'scheduled' | 'live' | 'ended'
+
 export type CreatedMeeting = {
   id: string
   title: string
@@ -5,6 +7,9 @@ export type CreatedMeeting = {
   organizer_id: string
   locked?: boolean
   ended?: boolean
+  starts_at?: string | null
+  ends_at?: string | null
+  status?: MeetingStatus
 }
 
 export type EmployeeMeeting = {
@@ -15,6 +20,9 @@ export type EmployeeMeeting = {
   ended: boolean
   pipeline_stage: string
   created_at: string
+  starts_at?: string | null
+  ends_at?: string | null
+  status?: MeetingStatus
 }
 
 type GuestSession = {
@@ -105,6 +113,8 @@ export async function createMeeting(
   title: string,
   employeeIds: string[] = [],
   coOrganizerIds: string[] = [],
+  startsAt?: string | null,
+  endsAt?: string | null,
 ): Promise<CreatedMeeting> {
   const response = await fetch('/v1/meetings', {
     method: 'POST',
@@ -113,6 +123,8 @@ export async function createMeeting(
       title,
       employee_ids: employeeIds,
       co_organizer_ids: coOrganizerIds,
+      starts_at: startsAt ?? undefined,
+      ends_at: endsAt ?? undefined,
     }),
   })
 
@@ -271,6 +283,9 @@ export type MeetingInfo = {
   locked: boolean
   ended: boolean
   pipeline_stage: string
+  starts_at?: string | null
+  ends_at?: string | null
+  status?: MeetingStatus
 }
 
 export async function getMeeting(meetingId: string, token: string): Promise<MeetingInfo> {

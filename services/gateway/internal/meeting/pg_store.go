@@ -17,6 +17,19 @@ type PGStore struct {
 	pool *pgxpool.Pool
 }
 
+const meetingSelectColumns = `id, title, password_hash, organizer_id, locked, ended, ended_at, last_active_at, pipeline_stage, created_at, starts_at, ends_at`
+
+func scanMeetingRow(scanner interface {
+	Scan(dest ...any) error
+}) (Meeting, error) {
+	var m Meeting
+	err := scanner.Scan(
+		&m.ID, &m.Title, &m.PasswordHash, &m.OrganizerID, &m.Locked, &m.Ended, &m.EndedAt,
+		&m.LastActiveAt, &m.PipelineStage, &m.CreatedAt, &m.StartsAt, &m.EndsAt,
+	)
+	return m, err
+}
+
 // Pool 供同库模块（如 auth.users）复用连接池。
 func (s *PGStore) Pool() *pgxpool.Pool {
 	return s.pool
@@ -44,6 +57,8 @@ ALTER TABLE meetings ADD COLUMN IF NOT EXISTS ended BOOLEAN NOT NULL DEFAULT FAL
 ALTER TABLE meetings ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ;
 ALTER TABLE meetings ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE meetings ADD COLUMN IF NOT EXISTS pipeline_stage TEXT NOT NULL DEFAULT '';
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ;
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS ends_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS recording_acks (
   meeting_id TEXT NOT NULL,
   principal_key TEXT NOT NULL,
@@ -217,9 +232,9 @@ func (s *PGStore) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
-func (s *PGStore) Create(title, organizerID, plainPassword string) (Meeting, string, error) {
+func (s *PGStore) Create(title, organizerID, plainPassword string, startsAt, endsAt *time.Time) (Meeting, string, error) {
 	mem := NewMemoryStore()
-	m, plain, err := mem.Create(title, organizerID, plainPassword)
+	m, plain, err := mem.Create(title, organizerID, plainPassword, startsAt, endsAt)
 	if err != nil {
 		return Meeting{}, "", err
 	}
@@ -229,9 +244,9 @@ func (s *PGStore) Create(title, organizerID, plainPassword string) (Meeting, str
 	}
 	defer tx.Rollback(context.Background())
 	if _, err = tx.Exec(context.Background(),
-		`INSERT INTO meetings (id, title, password_hash, organizer_id, locked, ended, ended_at, last_active_at, pipeline_stage, created_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		m.ID, m.Title, m.PasswordHash, m.OrganizerID, m.Locked, m.Ended, m.EndedAt, m.LastActiveAt, m.PipelineStage, m.CreatedAt,
+		`INSERT INTO meetings (id, title, password_hash, organizer_id, locked, ended, ended_at, last_active_at, pipeline_stage, created_at, starts_at, ends_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		m.ID, m.Title, m.PasswordHash, m.OrganizerID, m.Locked, m.Ended, m.EndedAt, m.LastActiveAt, m.PipelineStage, m.CreatedAt, m.StartsAt, m.EndsAt,
 	); err != nil {
 		return Meeting{}, "", err
 	}
@@ -249,11 +264,10 @@ func (s *PGStore) Create(title, organizerID, plainPassword string) (Meeting, str
 }
 
 func (s *PGStore) Get(id string) (Meeting, bool) {
-	var m Meeting
-	err := s.pool.QueryRow(context.Background(),
-		`SELECT id, title, password_hash, organizer_id, locked, ended, ended_at, last_active_at, pipeline_stage, created_at
-		 FROM meetings WHERE id=$1`, id,
-	).Scan(&m.ID, &m.Title, &m.PasswordHash, &m.OrganizerID, &m.Locked, &m.Ended, &m.EndedAt, &m.LastActiveAt, &m.PipelineStage, &m.CreatedAt)
+	row := s.pool.QueryRow(context.Background(),
+		`SELECT `+meetingSelectColumns+` FROM meetings WHERE id=$1`, id,
+	)
+	m, err := scanMeetingRow(row)
 	if err != nil {
 		return Meeting{}, false
 	}
@@ -347,7 +361,7 @@ func (s *PGStore) IsOrganizerOrCoOrganizer(meetingID, userID string) bool {
 func (s *PGStore) ListMeetingsForEmployee(userID string) ([]Meeting, error) {
 	rows, err := s.pool.Query(context.Background(),
 		`SELECT m.id, m.title, m.password_hash, m.organizer_id, m.locked, m.ended, m.ended_at,
-			m.last_active_at, m.pipeline_stage, m.created_at
+			m.last_active_at, m.pipeline_stage, m.created_at, m.starts_at, m.ends_at
 		 FROM meetings m
 		 JOIN meeting_members member ON member.meeting_id=m.id
 		 WHERE member.user_id=$1
@@ -359,11 +373,8 @@ func (s *PGStore) ListMeetingsForEmployee(userID string) ([]Meeting, error) {
 	defer rows.Close()
 	out := make([]Meeting, 0)
 	for rows.Next() {
-		var meeting Meeting
-		if err := rows.Scan(
-			&meeting.ID, &meeting.Title, &meeting.PasswordHash, &meeting.OrganizerID, &meeting.Locked,
-			&meeting.Ended, &meeting.EndedAt, &meeting.LastActiveAt, &meeting.PipelineStage, &meeting.CreatedAt,
-		); err != nil {
+		meeting, err := scanMeetingRow(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, meeting)
@@ -373,8 +384,7 @@ func (s *PGStore) ListMeetingsForEmployee(userID string) ([]Meeting, error) {
 
 func (s *PGStore) ListActive() ([]Meeting, error) {
 	rows, err := s.pool.Query(context.Background(),
-		`SELECT id, title, password_hash, organizer_id, locked, ended, ended_at, last_active_at, pipeline_stage, created_at
-		 FROM meetings WHERE ended=FALSE`,
+		`SELECT `+meetingSelectColumns+` FROM meetings WHERE ended=FALSE`,
 	)
 	if err != nil {
 		return nil, err
@@ -382,8 +392,8 @@ func (s *PGStore) ListActive() ([]Meeting, error) {
 	defer rows.Close()
 	out := make([]Meeting, 0)
 	for rows.Next() {
-		var m Meeting
-		if err := rows.Scan(&m.ID, &m.Title, &m.PasswordHash, &m.OrganizerID, &m.Locked, &m.Ended, &m.EndedAt, &m.LastActiveAt, &m.PipelineStage, &m.CreatedAt); err != nil {
+		m, err := scanMeetingRow(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -393,8 +403,7 @@ func (s *PGStore) ListActive() ([]Meeting, error) {
 
 func (s *PGStore) ListEnded() ([]Meeting, error) {
 	rows, err := s.pool.Query(context.Background(),
-		`SELECT id, title, password_hash, organizer_id, locked, ended, ended_at, last_active_at, pipeline_stage, created_at
-		 FROM meetings WHERE ended=TRUE`,
+		`SELECT `+meetingSelectColumns+` FROM meetings WHERE ended=TRUE`,
 	)
 	if err != nil {
 		return nil, err
@@ -402,8 +411,8 @@ func (s *PGStore) ListEnded() ([]Meeting, error) {
 	defer rows.Close()
 	out := make([]Meeting, 0)
 	for rows.Next() {
-		var m Meeting
-		if err := rows.Scan(&m.ID, &m.Title, &m.PasswordHash, &m.OrganizerID, &m.Locked, &m.Ended, &m.EndedAt, &m.LastActiveAt, &m.PipelineStage, &m.CreatedAt); err != nil {
+		m, err := scanMeetingRow(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -413,8 +422,7 @@ func (s *PGStore) ListEnded() ([]Meeting, error) {
 
 func (s *PGStore) ListEndedNeedingPipeline() ([]Meeting, error) {
 	rows, err := s.pool.Query(context.Background(),
-		`SELECT id, title, password_hash, organizer_id, locked, ended, ended_at, last_active_at, pipeline_stage, created_at
-		 FROM meetings
+		`SELECT `+meetingSelectColumns+` FROM meetings
 		 WHERE ended=TRUE AND pipeline_stage <> $1 AND pipeline_stage <> $2`,
 		StageReady, StageManualReview,
 	)
@@ -424,8 +432,8 @@ func (s *PGStore) ListEndedNeedingPipeline() ([]Meeting, error) {
 	defer rows.Close()
 	out := make([]Meeting, 0)
 	for rows.Next() {
-		var m Meeting
-		if err := rows.Scan(&m.ID, &m.Title, &m.PasswordHash, &m.OrganizerID, &m.Locked, &m.Ended, &m.EndedAt, &m.LastActiveAt, &m.PipelineStage, &m.CreatedAt); err != nil {
+		m, err := scanMeetingRow(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, m)

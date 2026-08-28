@@ -10,7 +10,7 @@ import (
 
 func TestEndIdleMeetings(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("idle-me", "u-1", "password")
+	m, _, err := s.Create("idle-me", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestEndIdleMeetings(t *testing.T) {
 // 有真实录制就停掉并按终态落库，没有才退回 pending 计划。
 func TestEndIdleMeetingsFinalizesEgress(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("idle-egress", "u-1", "password")
+	m, _, err := s.Create("idle-egress", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestEndIdleMeetingsFinalizesEgress(t *testing.T) {
 
 func TestEndIdleMeetingsSkipsFresh(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("fresh", "u-1", "password")
+	m, _, err := s.Create("fresh", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestEndIdleMeetingsSkipsFresh(t *testing.T) {
 
 func TestEndIdleMeetingsKeepsOccupiedRoom(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("still-there", "u-1", "password")
+	m, _, err := s.Create("still-there", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestEndIdleMeetingsKeepsOccupiedRoom(t *testing.T) {
 
 func TestEndIdleMeetingsSkipsWhenOccupancyUnknown(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("lk-down", "u-1", "password")
+	m, _, err := s.Create("lk-down", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

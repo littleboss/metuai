@@ -40,6 +40,8 @@ type createBody struct {
 	Title          string   `json:"title"`
 	EmployeeIDs    []string `json:"employee_ids"`
 	CoOrganizerIDs []string `json:"co_organizer_ids"`
+	StartsAt       string   `json:"starts_at"`
+	EndsAt         string   `json:"ends_at"`
 }
 
 type guestBody struct {
@@ -98,8 +100,13 @@ func RegisterRoutes(
 	r.POST("/v1/meetings", mustReady, identity.EmployeeAuth(employeeSecret), func(c *gin.Context) {
 		var body createBody
 		_ = c.ShouldBindJSON(&body)
+		startsAt, endsAt, scheduleErr := parseScheduleTimes(body.StartsAt, body.EndsAt)
+		if scheduleErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": scheduleErr.Error(), "message": scheduleErr.Error()})
+			return
+		}
 		principal := identity.MustPrincipal(c)
-		meeting, password, err := repo.Create(body.Title, principal.UserID, "")
+		meeting, password, err := repo.Create(body.Title, principal.UserID, "", startsAt, endsAt)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -114,14 +121,18 @@ func RegisterRoutes(
 			Action:    "meeting_created",
 			Detail:    meeting.Title,
 		})
-		c.JSON(http.StatusOK, gin.H{
+		resp := gin.H{
 			"id":           meeting.ID,
 			"title":        meeting.Title,
 			"password":     password,
 			"organizer_id": meeting.OrganizerID,
 			"locked":       meeting.Locked,
 			"ended":        meeting.Ended,
-		})
+		}
+		for k, v := range meetingScheduleFields(meeting) {
+			resp[k] = v
+		}
+		c.JSON(http.StatusOK, resp)
 	})
 
 	r.GET("/v1/meetings", identity.EmployeeAuth(employeeSecret), func(c *gin.Context) {
@@ -133,7 +144,7 @@ func RegisterRoutes(
 		}
 		items := make([]gin.H, 0, len(meetings))
 		for _, meeting := range meetings {
-			items = append(items, gin.H{
+			item := gin.H{
 				"id":             meeting.ID,
 				"title":          meeting.Title,
 				"organizer_id":   meeting.OrganizerID,
@@ -141,7 +152,11 @@ func RegisterRoutes(
 				"ended":          meeting.Ended,
 				"pipeline_stage": meeting.PipelineStage,
 				"created_at":     meeting.CreatedAt,
-			})
+			}
+			for k, v := range meetingScheduleFields(meeting) {
+				item[k] = v
+			}
+			items = append(items, item)
 		}
 		c.JSON(http.StatusOK, gin.H{"meetings": items})
 	})
@@ -188,14 +203,18 @@ func RegisterRoutes(
 			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
+		detail := gin.H{
 			"id":             current.ID,
 			"title":          current.Title,
 			"organizer_id":   current.OrganizerID,
 			"locked":         current.Locked,
 			"ended":          current.Ended,
 			"pipeline_stage": current.PipelineStage,
-		})
+		}
+		for k, v := range meetingScheduleFields(current) {
+			detail[k] = v
+		}
+		c.JSON(http.StatusOK, detail)
 	})
 
 	r.POST("/v1/meetings/:id/guest-session", mustReady, func(c *gin.Context) {
@@ -211,6 +230,10 @@ func RegisterRoutes(
 		}
 		if currentMeeting.Locked {
 			c.JSON(http.StatusForbidden, gin.H{"error": "meeting_locked", "message": "meeting is locked"})
+			return
+		}
+		if meetingNotStartedYet(currentMeeting, time.Now().UTC()) {
+			respondMeetingNotStarted(c, currentMeeting)
 			return
 		}
 
@@ -465,6 +488,10 @@ func RegisterRoutes(
 			return
 		}
 		principal := identity.MustPrincipal(c)
+		if meetingNotStartedYet(current, time.Now().UTC()) {
+			respondMeetingNotStarted(c, current)
+			return
+		}
 		if principal.Kind == identity.KindGuest && principal.MeetingID != meetingID {
 			c.JSON(http.StatusForbidden, gin.H{"error": "wrong_meeting"})
 			return
@@ -515,6 +542,10 @@ func RegisterRoutes(
 			return
 		}
 		principal := identity.MustPrincipal(c)
+		if meetingNotStartedYet(currentMeeting, time.Now().UTC()) {
+			respondMeetingNotStarted(c, currentMeeting)
+			return
+		}
 		if principal.Kind == identity.KindGuest && principal.MeetingID != meetingID {
 			c.JSON(http.StatusForbidden, gin.H{"error": "wrong_meeting"})
 			return

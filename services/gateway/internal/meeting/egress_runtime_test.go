@@ -42,7 +42,7 @@ func (f *fakeOrchestrator) FinalizeOne(_ context.Context, egressID string) egres
 
 func newMeeting(t *testing.T, s *Store) string {
 	t.Helper()
-	m, _, err := s.Create("egress-test", "u-1", "password")
+	m, _, err := s.Create("egress-test", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

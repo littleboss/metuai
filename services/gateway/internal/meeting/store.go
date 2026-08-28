@@ -20,7 +20,7 @@ import (
 const passwordChars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 type Repository interface {
-	Create(title, organizerID, plainPassword string) (Meeting, string, error)
+	Create(title, organizerID, plainPassword string, startsAt, endsAt *time.Time) (Meeting, string, error)
 	Get(id string) (Meeting, bool)
 	AddMembers(meetingID string, members []MeetingMember) error
 	MarkMemberJoined(meetingID, userID, displayName string) error
@@ -178,7 +178,7 @@ func RandomID(prefix string) (string, error) {
 	return prefix + randomPart, nil
 }
 
-func (s *Store) Create(title, organizerID, plainPassword string) (Meeting, string, error) {
+func (s *Store) Create(title, organizerID, plainPassword string, startsAt, endsAt *time.Time) (Meeting, string, error) {
 	if title == "" {
 		title = "即时会议"
 	}
@@ -209,6 +209,8 @@ func (s *Store) Create(title, organizerID, plainPassword string) (Meeting, strin
 		LastActiveAt:  now,
 		PipelineStage: "",
 		CreatedAt:     now,
+		StartsAt:      startsAt,
+		EndsAt:        endsAt,
 	}
 	s.mu.Lock()
 	s.meetings[m.ID] = m

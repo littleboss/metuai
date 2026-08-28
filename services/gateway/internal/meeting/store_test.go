@@ -7,7 +7,7 @@ import (
 
 func TestCreateAndCheckPassword(t *testing.T) {
 	s := NewMemoryStore()
-	m, plain, err := s.Create("standup", "u-1", "")
+	m, plain, err := s.Create("standup", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestCreateAndCheckPassword(t *testing.T) {
 
 func TestLegacyPasswordHashStillMatches(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("legacy", "u-1", "password")
+	m, _, err := s.Create("legacy", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestGetMissing(t *testing.T) {
 
 func TestMemoryStoreAckRecording(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("recorded meeting", "u-1", "password")
+	m, _, err := s.Create("recorded meeting", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestMemoryStoreAckRecording(t *testing.T) {
 
 func TestMemoryStoreGuestPresenceKeepsDisplayName(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("guest names", "u-1", "password")
+	m, _, err := s.Create("guest names", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestRandomIDUsesPrefix(t *testing.T) {
 
 func TestMemoryStoreEndAndKickAndChat(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("lifecycle", "u-1", "password")
+	m, _, err := s.Create("lifecycle", "u-1", "password", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

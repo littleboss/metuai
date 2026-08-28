@@ -18,7 +18,7 @@ func TestPGStoreMeetingLifecycle(t *testing.T) {
 	}
 	defer s.pool.Close()
 
-	m, plain, err := s.Create("pg-meet", "u-9", "")
+	m, plain, err := s.Create("pg-meet", "u-9", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

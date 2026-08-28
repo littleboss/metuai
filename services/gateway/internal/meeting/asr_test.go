@@ -6,7 +6,7 @@ import (
 
 func TestApplyASRResultRequiresEndedMeeting(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("asr", "u-1", "")
+	m, _, err := s.Create("asr", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestApplyASRResultRequiresEndedMeeting(t *testing.T) {
 
 func TestApplyASRResultRejectsBadSource(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("asr", "u-1", "")
+	m, _, err := s.Create("asr", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestApplyASRResultRejectsBadSource(t *testing.T) {
 
 func TestApplyASRResultWritesTranscriptAndStage(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("asr", "u-1", "")
+	m, _, err := s.Create("asr", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestApplyASRResultWritesTranscriptAndStage(t *testing.T) {
 
 func TestApplyASRResultDetectsLanguageWhenMissing(t *testing.T) {
 	s := NewMemoryStore()
-	m, _, err := s.Create("asr-lang", "u-1", "")
+	m, _, err := s.Create("asr-lang", "u-1", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

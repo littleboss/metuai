@@ -1,10 +1,12 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { AppShell } from '../aura/AppShell'
 import { Banner } from '../aura/Banner'
 import { parseApiError } from '../aura/parseApiError'
 import { Button } from '../aura/Button'
+import { EmptyState } from '../aura/EmptyState'
 import { SecretField, TextField } from '../aura/TextField'
 import { ackRecording, guestSession, livekitToken } from '../lib/api'
+import { formatCountdown } from '../lib/meetingSchedule'
 import { AuthPage } from './AuthPage'
 
 type JoinGatePageProps = {
@@ -25,6 +27,14 @@ export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
   const employeeToken = sessionStorage.getItem('employeeToken') ?? ''
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<{ error?: string; message?: string }>({})
+  const [notStartedAt, setNotStartedAt] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!notStartedAt) return
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [notStartedAt])
 
   if (mode === 'employee' && !employeeToken.trim()) {
     return (
@@ -44,6 +54,7 @@ export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
 
     setLoading(true)
     setErr({})
+    setNotStartedAt(null)
     try {
       if (mode === 'employee') {
         const token = employeeToken.trim()
@@ -70,9 +81,46 @@ export function JoinGatePage({ meetingId, mode = 'guest' }: JoinGatePageProps) {
       sessionStorage.setItem('principalKind', 'guest')
       window.location.assign('/room')
     } catch (error) {
-      setErr(parseApiError(error))
+      const parsed = parseApiError(error)
+      setErr(parsed)
+      if (parsed.error === 'meeting_not_started') {
+        try {
+          const body = JSON.parse((error as Error).message) as { starts_at?: string }
+          if (body.starts_at) setNotStartedAt(body.starts_at)
+        } catch {
+          /* starts_at 可选 */
+        }
+      }
       setLoading(false)
     }
+  }
+
+  if (err.error === 'meeting_not_started') {
+    return (
+      <AppShell title="METUAI / 入会">
+        <div className="mx-auto flex w-full max-w-md flex-col gap-4">
+          <EmptyState
+            title="未到开始时间"
+            description={
+              notStartedAt
+                ? `会议将于 ${new Date(notStartedAt).toLocaleString(undefined, {
+                    dateStyle: 'medium',
+                    timeStyle: 'short',
+                  })} 开始。`
+                : '会议尚未开始，请稍后再试。'
+            }
+            action={
+              notStartedAt ? (
+                <p className="font-mono text-2xl font-semibold text-accent">
+                  {formatCountdown(notStartedAt, nowMs)}
+                </p>
+              ) : null
+            }
+          />
+          <Banner error={err.error} message="会议尚未开始，暂无法进入会场。" />
+        </div>
+      </AppShell>
+    )
   }
 
   return (
