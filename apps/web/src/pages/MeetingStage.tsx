@@ -14,6 +14,11 @@ import { ControlBar } from '../aura/ControlBar'
 import { VideoTile } from '../aura/VideoTile'
 import { endMeeting, heartbeat, leaveMeeting } from '../lib/api'
 import {
+  classifyJoinError,
+  joinErrorBanner,
+  type JoinErrorKind,
+} from '../lib/livekitErrors'
+import {
   canUseLocalRecording,
   stopAndUploadLocalRecording,
 } from '../lib/localRecording'
@@ -116,7 +121,7 @@ function StageGrid({
 
 /** 会中网格舞台：LiveKit + Aura ControlBar / VideoTile。cam/mic 拒绝仍可入会。 */
 export function MeetingStage(props: MeetingStageProps) {
-  const [mediaError, setMediaError] = useState<string | null>(null)
+  const [joinError, setJoinError] = useState<{ kind: JoinErrorKind; detail: string } | null>(null)
 
   return (
     <div className="min-h-screen bg-bg-app text-text">
@@ -124,9 +129,9 @@ export function MeetingStage(props: MeetingStageProps) {
         <span className="text-lg font-semibold tracking-tight">METUAI</span>
         <span className="font-mono text-xs tracking-[0.2em] text-secondary">{props.meetingId}</span>
       </header>
-      {mediaError ? (
+      {joinError ? (
         <p className="px-4 py-2 text-sm text-secondary">
-          设备权限受限（{mediaError}），仍可入会；画面将显示「无画面/无声」。
+          {joinErrorBanner(joinError.kind, joinError.detail)}
         </p>
       ) : null}
       <LiveKitRoom
@@ -135,8 +140,10 @@ export function MeetingStage(props: MeetingStageProps) {
         connect
         video
         audio
-        onError={(e) => setMediaError(e.message)}
-        onMediaDeviceFailure={() => setMediaError('permission-denied')}
+        onError={(e) => setJoinError({ kind: classifyJoinError(e.message), detail: e.message })}
+        onMediaDeviceFailure={() =>
+          setJoinError({ kind: 'permission', detail: 'permission-denied' })
+        }
         className="min-h-[calc(100vh-3.5rem)]"
       >
         <StageGrid
