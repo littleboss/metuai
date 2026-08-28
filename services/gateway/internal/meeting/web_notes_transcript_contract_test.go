@@ -99,6 +99,60 @@ func TestWebNotesPanelGenerateDisabledWithoutTranscript(t *testing.T) {
 	}
 }
 
+// NotesPage 录像回放：getMedia + 三态；空态不得渲染 <video>。
+func TestWebNotesPageRecordingPlaybackContract(t *testing.T) {
+	page := readWebFile(t, filepath.Join("pages", "NotesPage.tsx"))
+	panel := readWebFile(t, filepath.Join("aura", "ReplayPanel.tsx"))
+
+	for _, needle := range []string{"getMedia", "ReplayPanel", "录像", "pickPlayableArtifact"} {
+		if !strings.Contains(page, needle) {
+			t.Fatalf("NotesPage must use recording playback via %q", needle)
+		}
+	}
+	if !strings.Contains(page, "parseApiError") {
+		t.Fatal("NotesPage must surface media errors via parseApiError")
+	}
+	if strings.Contains(panel, "poster=") || strings.Contains(panel, "placeholder") {
+		t.Fatal("ReplayPanel must not invent fake poster/placeholder video")
+	}
+	if !strings.Contains(panel, "mode === 'empty'") {
+		t.Fatal("ReplayPanel must handle empty state")
+	}
+	if !strings.Contains(panel, "download_url") {
+		t.Fatal("ReplayPanel must require download_url before player")
+	}
+	if !strings.Contains(panel, "status === 'ready'") {
+		t.Fatal("ReplayPanel must only play ready artifacts")
+	}
+	if !strings.Contains(panel, "LoadingSkeleton") {
+		t.Fatal("ReplayPanel must use LoadingSkeleton for loading state")
+	}
+	if strings.Contains(panel, "bg-black") {
+		t.Fatal("ReplayPanel video canvas must not use bg-black")
+	}
+	if !strings.Contains(panel, "bg-[#0A0D12]") {
+		t.Fatal("ReplayPanel video canvas must use bg-[#0A0D12]")
+	}
+	emptyIdx := strings.Index(panel, "mode === 'empty'")
+	videoIdx := strings.Index(panel, "<video")
+	if emptyIdx < 0 || videoIdx < 0 {
+		t.Fatal("expected empty branch and video player")
+	}
+	if emptyIdx > videoIdx {
+		t.Fatal("empty state branch must be checked before rendering <video>")
+	}
+	// 录像区块应在转写与纪要之后。
+	transcriptIdx := strings.Index(page, ">转写</h2>")
+	notesIdx := strings.Index(page, ">纪要</h2>")
+	recordingIdx := strings.Index(page, ">录像</h2>")
+	if transcriptIdx < 0 || notesIdx < 0 || recordingIdx < 0 {
+		t.Fatal("NotesPage must include 转写, 纪要, and 录像 section headings")
+	}
+	if !(transcriptIdx < notesIdx && notesIdx < recordingIdx) {
+		t.Fatal("录像 section must appear below transcript and notes")
+	}
+}
+
 func TestGatewaySourceHasNoRunASRStub(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "services", "gateway")
 	var hits []string

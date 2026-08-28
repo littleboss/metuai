@@ -4,15 +4,18 @@ import { Banner } from '../aura/Banner'
 import { parseApiError } from '../aura/parseApiError'
 import { Button } from '../aura/Button'
 import { NotesPanel } from '../aura/NotesPanel'
+import { pickPlayableArtifact, ReplayPanel } from '../aura/ReplayPanel'
 import { TranscriptPanel } from '../aura/TranscriptPanel'
 import {
   completeActionItem,
   generateSummary,
   generateTranscript,
+  getMedia,
   getMeeting,
   getSummary,
   getTranscript,
   type ActionItem,
+  type MediaArtifact,
   type MeetingSummary,
   type TranscriptSegment,
 } from '../lib/api'
@@ -46,11 +49,15 @@ export function NotesPage({ meetingId, authToken }: NotesPageProps) {
   const [summary, setSummary] = useState<MeetingSummary | null>(null)
   const [err, setErr] = useState<{ error?: string; message?: string }>({})
   const [hasTranscript, setHasTranscript] = useState(false)
+  const [recordingMode, setRecordingMode] = useState<'loading' | 'empty' | 'ready'>('loading')
+  const [playableArtifact, setPlayableArtifact] = useState<MediaArtifact | null>(null)
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
       setErr({})
+      setRecordingMode('loading')
+      setPlayableArtifact(null)
       try {
         const info = await getMeeting(meetingId, authToken)
         if (cancelled) return
@@ -95,6 +102,20 @@ export function NotesPage({ meetingId, authToken }: NotesPageProps) {
         }
         setSummary(null)
         setNotesMode('no-transcript')
+      }
+
+      try {
+        const artifacts = await getMedia(meetingId, authToken)
+        if (cancelled) return
+        const playable = pickPlayableArtifact(artifacts)
+        setPlayableArtifact(playable)
+        setRecordingMode(playable ? 'ready' : 'empty')
+      } catch (error) {
+        if (cancelled) return
+        const parsed = parseApiError(error)
+        setErr((prev) => ({ ...prev, ...parsed }))
+        setPlayableArtifact(null)
+        setRecordingMode('empty')
       }
     })()
     return () => {
@@ -244,6 +265,12 @@ export function NotesPage({ meetingId, authToken }: NotesPageProps) {
             onGenerate={() => void handleGenerateNotes()}
             generateDisabled={!hasTranscript}
           />
+        </section>
+        <section className="rounded-lg border border-border bg-surface p-4">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold tracking-tight">录像</h2>
+          </div>
+          <ReplayPanel mode={recordingMode} artifact={playableArtifact} />
         </section>
       </div>
     </AppShell>
