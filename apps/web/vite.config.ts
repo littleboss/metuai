@@ -11,6 +11,11 @@ export default defineConfig({
       '/v1': 'http://127.0.0.1:18080',
       '/healthz': 'http://127.0.0.1:18080',
       '/readyz': 'http://127.0.0.1:18080',
+      // LiveKit 信令同源代理（与 compose nginx /rtc 一致；目标为宿主机映射端口）。
+      '/rtc': {
+        target: 'http://127.0.0.1:17880',
+        ws: true,
+      },
     },
   },
 })

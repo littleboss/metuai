@@ -50,15 +50,18 @@ docker compose -f infra/compose/docker-compose.yml up --build
 |---|---|
 | Postgres | `127.0.0.1:55432` |
 | Redis | `127.0.0.1:16379` |
-| LiveKit | `ws://127.0.0.1:17880` |
+| LiveKit（宿主机直连，host-dev） | `ws://127.0.0.1:17880` |
+| LiveKit（compose 浏览器，同源） | `ws://127.0.0.1:5173`（nginx `/rtc`） |
 | MinIO API / Console | `http://127.0.0.1:19000` / `http://127.0.0.1:19001` |
 | Gateway (api) | `http://127.0.0.1:18080` |
 | Web | `http://127.0.0.1:5173` |
 
 容器内网关用 `LIVEKIT_URL=ws://livekit:7880` 调 SDK；`livekit-token` 返回的
-`livekit_url` 使用 `LIVEKIT_PUBLIC_URL`（默认 `ws://127.0.0.1:17880`），供浏览器连接。
+`livekit_url` 使用 `LIVEKIT_PUBLIC_URL`（compose 默认 `ws://127.0.0.1:5173`），
+供浏览器经同源 nginx `/rtc` 连接 LiveKit（令牌里绝不能出现 `ws://livekit:7880`）。
 
-Web 镜像由 nginx 提供静态资源，并把 `/v1`、`/healthz`、`/readyz` 反代到 `api:18080`。
+Web 镜像由 nginx 提供静态资源，并把 `/v1`、`/healthz`、`/readyz` 反代到 `api:18080`，
+`/rtc` 反代到 `livekit:7880`（WebSocket 信令）。
 `api` 健康检查只探针 `GET /readyz`。
 
 ## 本地启动（宿主机 go run / pnpm，可选）
@@ -136,6 +139,9 @@ pnpm dev
 ```
 
 打开 `http://127.0.0.1:5173`：注册/登录 → 会议列表 → 大厅 → 入会门 → 会场 → 纪要。嘉宾仍用链接+密码。
+
+宿主机 `pnpm dev` 时，Vite 会把 `/rtc` 代理到 `127.0.0.1:17880`（与 compose nginx 行为一致）。
+可将 `LIVEKIT_PUBLIC_URL=ws://127.0.0.1:5173` 走同源代理，或继续用 `ws://127.0.0.1:17880` 直连 LiveKit。
 
 未确认录音时，`/v1/meetings/:id/livekit-token` 返回 `403` 且 `error=recording_ack_required`。  
 将 `DEV_ALLOW_EMPLOYEE_WEB=false` 后，员工浏览器入会会被拒绝（需 `X-Metuai-Client: tauri`）。

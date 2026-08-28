@@ -3,6 +3,7 @@
 # 为什么不用 `--dev`：dev 模式不配置 Redis，而 livekit-server 与 livekit/egress
 # 之间正是通过 Redis 派发录制任务的。没有 Redis，StartEgress 会一直超时。
 # 端口与密钥刻意保持和 dev 模式一致，宿主机侧的 17880/17881/17882 映射不变。
+development: true
 port: 7880
 bind_addresses:
   - 0.0.0.0
@@ -13,6 +14,8 @@ rtc:
   port_range_start: 50000
   port_range_end: 50100
   use_external_ip: false
+  # 浏览器在宿主机上跑，ICE 候选必须是 127.0.0.1，不能是 Docker 网桥 172.x。
+  node_ip: 127.0.0.1
 
 redis:
   address: redis:6379
